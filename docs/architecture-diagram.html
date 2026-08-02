@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Contoso Smart Retail Insights Platform — Architecture</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --panel: #111a30;
+    --panel2: #18243f;
+    --border: #2a3a5e;
+    --text: #e8edf7;
+    --muted: #9aa6c2;
+    --accent: #5da9ff;
+    --accent2: #7ee8a0;
+    --accent3: #ffb86b;
+    --accent4: #c79bff;
+    --danger: #ff7b8a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px; background: var(--bg); color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  h1 { font-size: 22px; margin: 0 0 4px 0; }
+  .sub { color: var(--muted); margin-bottom: 18px; font-size: 13px; }
+  .layer {
+    border: 1px solid var(--border);
+    background: var(--panel);
+    border-radius: 12px;
+    padding: 12px 14px;
+    margin-bottom: 12px;
+  }
+  .layer h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin: 0 0 10px 0;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; }
+  .box {
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    min-width: 140px;
+    flex: 1 1 140px;
+    font-size: 13px;
+    line-height: 1.35;
+  }
+  .box .name { font-weight: 600; display: block; }
+  .box .note { color: var(--muted); font-size: 11.5px; display: block; margin-top: 4px; }
+  .edge   { border-left: 3px solid var(--accent); }
+  .compute { border-left: 3px solid var(--accent2); }
+  .data    { border-left: 3px solid var(--accent3); }
+  .ai      { border-left: 3px solid var(--accent4); }
+  .sec     { border-left: 3px solid var(--danger); }
+  .ops     { border-left: 3px solid var(--muted); }
+  .arrow {
+    text-align: center;
+    color: var(--muted);
+    font-size: 18px;
+    margin: -4px 0 -2px 0;
+  }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 6px; font-size: 12px; color: var(--muted); }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+  .footer { margin-top: 14px; color: var(--muted); font-size: 12px; }
+  @media (max-width: 720px) { .box { flex-basis: 100%; } }
+</style>
+</head>
+<body>
+
+<h1>Contoso Smart Retail Insights Platform</h1>
+<div class="sub">Reference architecture — companion to <code>02-Architecture.md</code></div>
+
+<div class="layer">
+  <h2>Edge &amp; ingress</h2>
+  <div class="row">
+    <div class="box edge"><span class="name">Azure Front Door (Std/Prem)</span><span class="note">TLS, geo-routing, edge cache, WAF</span></div>
+    <div class="box edge"><span class="name">Application Gateway v2 + WAF</span><span class="note">OWASP CRS, prevention mode</span></div>
+    <div class="box edge"><span class="name">Azure API Management</span><span class="note">JWT validation, rate limits, policies</span></div>
+  </div>
+</div>
+
+<div class="arrow">▼</div>
+
+<div class="layer">
+  <h2>Compute — AKS (zone-redundant, Workload Identity)</h2>
+  <div class="row">
+    <div class="box compute"><span class="name">web-frontend</span><span class="note">React + Vite, served by NGINX</span></div>
+    <div class="box compute"><span class="name">catalog-svc</span><span class="note">.NET 8 minimal API</span></div>
+    <div class="box compute"><span class="name">review-svc</span><span class="note">.NET 8 / Node</span></div>
+    <div class="box compute"><span class="name">assistant-svc</span><span class="note">Python FastAPI, streaming SSE</span></div>
+    <div class="box compute"><span class="name">moderation-worker</span><span class="note">KEDA-scaled queue consumer</span></div>
+    <div class="box compute"><span class="name">admin-bff</span><span class="note">.NET 8 backend-for-frontend</span></div>
+    <div class="box compute"><span class="name">notification-svc</span><span class="note">Node</span></div>
+    <div class="box compute"><span class="name">analytics-collector</span><span class="note">Go / Node, forwards to Event Hubs</span></div>
+  </div>
+</div>
+
+<div class="arrow">▼ Managed Identity, Private Endpoints</div>
+
+<div class="layer">
+  <h2>Data plane</h2>
+  <div class="row">
+    <div class="box data"><span class="name">Azure Cosmos DB (NoSQL)</span><span class="note">products, reviews, chat-history</span></div>
+    <div class="box data"><span class="name">Azure SQL Database</span><span class="note">users, orders, audit log</span></div>
+    <div class="box data"><span class="name">Blob Storage</span><span class="note">review images, lifecycle policy</span></div>
+    <div class="box data"><span class="name">Azure Cache for Redis</span><span class="note">cache-aside, rate-limit counters</span></div>
+  </div>
+</div>
+
+<div class="layer">
+  <h2>Messaging</h2>
+  <div class="row">
+    <div class="box data"><span class="name">Service Bus</span><span class="note">commands: review-moderation-jobs</span></div>
+    <div class="box data"><span class="name">Event Hubs</span><span class="note">domain-events stream + Capture</span></div>
+    <div class="box data"><span class="name">Event Grid</span><span class="note">Blob events, system events</span></div>
+  </div>
+</div>
+
+<div class="layer">
+  <h2>AI plane</h2>
+  <div class="row">
+    <div class="box ai"><span class="name">Azure OpenAI Service</span><span class="note">GPT-4-class chat + embeddings</span></div>
+    <div class="box ai"><span class="name">Azure AI Search</span><span class="note">hybrid: BM25 + vector + semantic ranker</span></div>
+    <div class="box ai"><span class="name">Azure AI Language</span><span class="note">sentiment, key phrases, PII</span></div>
+    <div class="box ai"><span class="name">Azure AI Vision</span><span class="note">tags, OCR, content scoring</span></div>
+    <div class="box ai"><span class="name">Azure AI Content Safety</span><span class="note">text + image moderation</span></div>
+  </div>
+</div>
+
+<div class="layer">
+  <h2>Analytics plane</h2>
+  <div class="row">
+    <div class="box data"><span class="name">Stream Analytics</span><span class="note">1-min tumbling aggregates → Cosmos &amp; PowerBI</span></div>
+    <div class="box data"><span class="name">ADLS Gen2</span><span class="note">bronze / silver / gold lakehouse</span></div>
+    <div class="box data"><span class="name">Synapse Analytics</span><span class="note">serverless SQL + Spark, star schema</span></div>
+    <div class="box data"><span class="name">Power BI</span><span class="note">dashboards, real-time tiles, RLS</span></div>
+    <div class="box data"><span class="name">Microsoft Purview</span><span class="note">data catalog &amp; classification</span></div>
+  </div>
+</div>
+
+<div class="layer">
+  <h2>Identity &amp; security</h2>
+  <div class="row">
+    <div class="box sec"><span class="name">Microsoft Entra ID</span><span class="note">workforce + Conditional Access + PIM</span></div>
+    <div class="box sec"><span class="name">Entra External ID</span><span class="note">customer sign-up / sign-in (was B2C)</span></div>
+    <div class="box sec"><span class="name">Managed Identities</span><span class="note">one per service, federated to K8s SAs</span></div>
+    <div class="box sec"><span class="name">Azure Key Vault</span><span class="note">secrets, keys, certs — RBAC only</span></div>
+    <div class="box sec"><span class="name">Defender for Cloud</span><span class="note">CSPM + Defender plans</span></div>
+    <div class="box sec"><span class="name">Microsoft Sentinel</span><span class="note">SIEM + SOAR on the LA workspace</span></div>
+  </div>
+</div>
+
+<div class="layer">
+  <h2>Networking</h2>
+  <div class="row">
+    <div class="box sec"><span class="name">Virtual Network (spoke)</span><span class="note">10.20.0.0/16 with dedicated subnets</span></div>
+    <div class="box sec"><span class="name">Private Endpoints</span><span class="note">every data and AI service</span></div>
+    <div class="box sec"><span class="name">Private DNS zones</span><span class="note">privatelink.*, linked to VNet</span></div>
+    <div class="box sec"><span class="name">NSGs</span><span class="note">deny-by-default, explicit allows</span></div>
+    <div class="box sec"><span class="name">Azure Firewall (prod)</span><span class="note">egress filtering, FQDN rules</span></div>
+    <div class="box sec"><span class="name">Azure Bastion</span><span class="note">secure access to jumpbox</span></div>
+  </div>
+</div>
+
+<div class="layer">
+  <h2>DevOps, observability &amp; governance</h2>
+  <div class="row">
+    <div class="box ops"><span class="name">GitHub + Actions</span><span class="note">CI/CD, OIDC federation, no secrets</span></div>
+    <div class="box ops"><span class="name">Bicep + azd</span><span class="note">IaC, what-if on every PR</span></div>
+    <div class="box ops"><span class="name">Azure Container Registry</span><span class="note">private, CMK, image scanning</span></div>
+    <div class="box ops"><span class="name">Azure Monitor + App Insights</span><span class="note">OpenTelemetry, workbooks, alerts</span></div>
+    <div class="box ops"><span class="name">Log Analytics</span><span class="note">unified sink + KQL</span></div>
+    <div class="box ops"><span class="name">Azure Policy + Mgmt Groups</span><span class="note">guardrails, tagging, location</span></div>
+    <div class="box ops"><span class="name">Cost Management + Budgets</span><span class="note">forecasts, action groups, tagged reporting</span></div>
+  </div>
+</div>
+
+<div class="legend">
+  <span><span class="swatch" style="background:#5da9ff"></span>Edge</span>
+  <span><span class="swatch" style="background:#7ee8a0"></span>Compute</span>
+  <span><span class="swatch" style="background:#ffb86b"></span>Data &amp; analytics</span>
+  <span><span class="swatch" style="background:#c79bff"></span>AI</span>
+  <span><span class="swatch" style="background:#ff7b8a"></span>Identity / security / networking</span>
+  <span><span class="swatch" style="background:#9aa6c2"></span>DevOps &amp; governance</span>
+</div>
+
+<div class="footer">Open in any browser. Print-friendly. Pairs with <code>02-Architecture.md</code>.</div>
+
+</body>
+</html>

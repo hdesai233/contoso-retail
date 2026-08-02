@@ -1,0 +1,13 @@
+# CI for apps/**: test + build container images (no push on PRs).
+# TODO: implement per-language jobs (matrix over apps).
+name: ci-apps
+on:
+  pull_request:
+    paths: ['apps/**', '.github/workflows/ci-apps.yml']
+  workflow_dispatch: {}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # TODO

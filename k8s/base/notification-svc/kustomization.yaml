@@ -1,0 +1,10 @@
+# k8s base for notification-svc — Phase 3
+# TODO: add deployment.yaml, service.yaml, serviceaccount.yaml, ingress.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: notification
+# resources:
+#   - deployment.yaml
+#   - service.yaml
+#   - serviceaccount.yaml
+#   - ingress.yaml

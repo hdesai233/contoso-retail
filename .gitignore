@@ -1,0 +1,58 @@
+# .NET
+bin/
+obj/
+*.user
+*.userosscache
+*.suo
+*.vs/
+.vshistory/
+
+# Node
+node_modules/
+dist/
+.next/
+.nuxt/
+.turbo/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Bicep / Azure
+*.bicep.decompiled.json
+main.json
+*.parameters.local.json
+.azd/
+
+# VS Code / IDE
+.vscode/*
+!.vscode/settings.json.example
+!.vscode/extensions.json
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Secrets — never commit these
+*.pfx
+*.pem
+*.key
+secrets/

@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+# TODO: wire up services after Phase 2. See docs/03-Implementation-Guide.md §0.4.
+
+name: contoso-retail
+metadata:
+  template: contoso-retail@0.1.0
+
+# services:
+#   catalog-svc:
+#     project: ./apps/catalog-svc
+#     language: dotnet
+#     host: aks
+
+infra:
+  provider: bicep
+  path: infra
+  module: main

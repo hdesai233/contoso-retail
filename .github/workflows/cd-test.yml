@@ -1,0 +1,18 @@
+# CD to test. Triggered on merge to main (dev) or manual promotion (test/prod).
+# TODO: implement.
+name: cd-test
+on:
+  workflow_dispatch: {}
+
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: test   # protection rules gate this in GitHub environment settings
+    steps:
+      - uses: actions/checkout@v4
+      # TODO: az login (OIDC), az deployment group create, kubectl apply -k k8s/overlays/test
