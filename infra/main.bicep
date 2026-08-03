@@ -41,11 +41,12 @@ var keyVaultName = 'kv-${workload}-${env}-${regionAbbr}-01'
 // -----------------------------------------------------------------------------
 
 // Phase 1
-// module observability 'modules/observability.bicep' = { name: 'observability', params: { workload: workload, env: env, location: location, tags: tags } }
+// module observability 'modules/observability.bicep' = { name: 'observability', params: { workload: workload, env: env, location: location, regionAbbr: regionAbbr, tags: tags } }
 // module network       'modules/network.bicep'       = { name: 'network',       params: { workload: workload, env: env, location: location, regionAbbr: regionAbbr, tags: tags } }
 // module keyvault      'modules/keyvault.bicep'      = { name: 'keyvault',      params: { keyVaultName: keyVaultName, location: location, tags: tags, subnetId: network.outputs.privateEndpointSubnetId, privateDnsZoneId: network.outputs.keyVaultPrivateDnsZoneId, laWorkspaceId: observability.outputs.laWorkspaceId } }
-// module identity      'modules/identity.bicep'      = { name: 'identity',      params: { workload: workload, env: env, location: location, tags: tags } }
-// module defender      'modules/defender.bicep'      = { name: 'defender',      params: { workload: workload, env: env } }
+// module identity      'modules/identity.bicep'      = { name: 'identity',      params: { env: env, location: location, tags: tags } }
+// // defender.bicep is subscription-scoped and subscription-wide — deploy once total, not once per environment. Needs `scope: subscription()` since main.bicep itself is resourceGroup-scoped.
+// module defender      'modules/defender.bicep'      = { name: 'defender', scope: subscription(), params: {} }
 
 // Phase 2
 // module acr           'modules/acr.bicep'           = { name: 'acr', ... }

@@ -79,7 +79,7 @@ implemented.
 | `analytics-collector` | `mi-analytics-collector-dev` | `mi-analytics-collector-test` | `mi-analytics-collector-prod` |
 | `web-frontend`* | `mi-web-frontend-dev` | `mi-web-frontend-test` | `mi-web-frontend-prod` |
 
-\* `web-frontend` is a static SPA with no server-side Azure calls today; skip provisioning its MI until it actually needs one — don't create it speculatively.
+\* `web-frontend` is a static SPA with no server-side Azure calls today, but `identity.bicep` creates its MI as a placeholder alongside the other seven anyway, per `docs/03-Implementation-Guide.md` Phase 1's explicit scope ("Managed Identities for the eight services"). Revisit if it turns out to never need one.
 
 ### Data plane (Phase 3)
 
