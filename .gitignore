@@ -33,6 +33,7 @@ env/
 main.json
 *.parameters.local.json
 .azd/
+infra/**/*.json
 
 # VS Code / IDE
 .vscode/*

@@ -27,6 +27,16 @@ var tags = {
   managedBy: 'bicep'
 }
 
+// CAF region abbreviation — kept as a var (not a param) since eus2 is the
+// only region in scope today; see docs/naming.md. Passed explicitly into
+// modules that build their own names so it can't drift from their defaults.
+var regionAbbr = 'eus2'
+
+// Resource names computed here (rather than inside their module) because
+// they're needed as inputs by other modules, e.g. keyVaultName feeds
+// keyvault.bicep, which also needs subnetId/privateDnsZoneId from network.bicep.
+var keyVaultName = 'kv-${workload}-${env}-${regionAbbr}-01'
+
 // -----------------------------------------------------------------------------
 // Modules — uncomment and wire up as each phase is completed.
 // Order matters: observability → network → keyvault → identity → data → compute → ai → analytics → edge
@@ -34,8 +44,8 @@ var tags = {
 
 // Phase 1
 // module observability 'modules/observability.bicep' = { name: 'observability', params: { workload: workload, env: env, location: location, tags: tags } }
-// module network       'modules/network.bicep'       = { name: 'network',       params: { workload: workload, env: env, location: location, tags: tags } }
-// module keyvault      'modules/keyvault.bicep'      = { name: 'keyvault',      params: { workload: workload, env: env, location: location, tags: tags, subnetId: network.outputs.privateEndpointSubnetId, laWorkspaceId: observability.outputs.laWorkspaceId } }
+// module network       'modules/network.bicep'       = { name: 'network',       params: { workload: workload, env: env, location: location, regionAbbr: regionAbbr, tags: tags } }
+// module keyvault      'modules/keyvault.bicep'      = { name: 'keyvault',      params: { keyVaultName: keyVaultName, location: location, tags: tags, subnetId: network.outputs.privateEndpointSubnetId, privateDnsZoneId: network.outputs.keyVaultPrivateDnsZoneId, laWorkspaceId: observability.outputs.laWorkspaceId } }
 // module identity      'modules/identity.bicep'      = { name: 'identity',      params: { workload: workload, env: env, location: location, tags: tags } }
 // module defender      'modules/defender.bicep'      = { name: 'defender',      params: { workload: workload, env: env } }
 

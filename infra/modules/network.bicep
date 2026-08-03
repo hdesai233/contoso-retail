@@ -187,6 +187,31 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {
 }
 
 // -----------------------------------------------------------------------------
+// Private DNS zones — one per data-service type that needs Private Endpoint
+// name resolution, linked to this VNet. Only Key Vault's zone exists so far;
+// add more here as their modules (Cosmos, SQL, Storage, Redis, ...) land.
+// -----------------------------------------------------------------------------
+
+resource keyVaultPrivateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.vaultcore.azure.net'
+  location: 'global'
+  tags: tags
+}
+
+resource keyVaultPrivateDnsZoneVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: keyVaultPrivateDnsZone
+  name: '${vnetName}-link'
+  location: 'global'
+  tags: tags
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: vnet.id
+    }
+  }
+}
+
+// -----------------------------------------------------------------------------
 // Outputs
 // -----------------------------------------------------------------------------
 
@@ -197,3 +222,4 @@ output userPoolSubnetId string = resourceId('Microsoft.Network/virtualNetworks/s
 output appGwSubnetId string = resourceId('Microsoft.Network/virtualNetworks/subnets', vnet.name, 'snet-appgw')
 output privateEndpointSubnetId string = resourceId('Microsoft.Network/virtualNetworks/subnets', vnet.name, 'snet-pe')
 output apimSubnetId string = resourceId('Microsoft.Network/virtualNetworks/subnets', vnet.name, 'snet-apim')
+output keyVaultPrivateDnsZoneId string = keyVaultPrivateDnsZone.id
