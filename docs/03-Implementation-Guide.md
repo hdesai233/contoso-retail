@@ -111,7 +111,7 @@ e.g.,  rg-contoso-dev-eus2
        kv-contoso-dev-eus2-01
        acrcontosodeveus2          (ACR has no hyphens allowed)
 ```
-Document this in `/docs/naming.md` and have Claude Code enforce it in Bicep modules.
+Write this down formally in step 0.7 below, then have Claude Code enforce it in every Bicep module going forward.
 
 **0.3 Create the repo.**
 ```powershell
@@ -128,17 +128,33 @@ azd init --template empty
 ```
 Edit `azure.yaml` to reference your future services (start with placeholders).
 
-**0.5 Create the dev subscription and resource group.**
+**0.5 Check which regions your subscription actually allows.**
+Sandbox, student, and CSP-managed subscriptions frequently carry an **"Allowed resource deployment regions"** policy set at the tenant or management-group level, restricting you to a handful of regions regardless of what your naming convention assumes. Check *before* you pick a region and bake it into resource names:
+```powershell
+az policy assignment list --query "[?displayName=='Allowed resource deployment regions']" -o table
+# If one exists, see its allowed list:
+az policy assignment show --name <name-from-above> --query "parameters.listOfAllowedLocations.value" -o tsv
+```
+This project hit exactly this on its dev subscription — `eastus2` was blocked, `eastus` wasn't. Rather than discover it mid-deployment (which is what happened — `az deployment group what-if` failed with `RequestDisallowedByAzure` on every resource), check first. If your region is restricted, record the decision as an ADR (see `docs/decisions/ADR-001-dev-region-eastus.md` for this project's own example) and update `docs/naming.md` and `infra/env/*.bicepparam` accordingly before writing any modules.
+
+**0.6 Create the dev subscription and resource group.**
 ```powershell
 az account set --subscription "<your sub id>"
 az group create -n rg-contoso-dev-eus2 -l eastus2 `
   --tags env=dev workload=contoso-retail owner="you@example.com" costCenter=learning
 ```
+> The resource group's own name/location aren't restricted by the region policy above (only resources deployed *into* it are) — so `rg-contoso-dev-eus2` and `-l eastus2` are fine here even if your region turned out to be `eastus` per 0.5. Just make sure `infra/env/dev.bicepparam` sets `location`/`regionAbbr` to whatever 0.5 found allowed, not necessarily `eastus2`.
 
-**0.6 Configure OIDC federated identity for GitHub Actions.**
+**0.7 Document the naming convention.**
+Before writing any Bicep, decide and write down every exact resource name you'll use — cheaper to fix a name on paper than after three modules depend on it.
+
+> **Claude Code prompt:**
+> *"Generate `docs/naming.md` documenting the CAF-style naming convention I've adopted and listing the exact names this project will use for each resource type, separated by environment."*
+
+**0.8 Configure OIDC federated identity for GitHub Actions.**
 Have Claude Code generate the App Registration + federated credential + RBAC role assignments. The result: GitHub Actions can `az login` into your subscription with zero secrets.
 
-**0.7 Create your first Bicep skeleton.**
+**0.9 Create your first Bicep skeleton.**
 `infra/main.bicep`:
 ```bicep
 targetScope = 'resourceGroup'
@@ -151,6 +167,9 @@ param env string
 
 @description('Region for resources')
 param location string = resourceGroup().location
+
+@description('CAF region abbreviation used in resource names — must match `location`. See 0.5: this can differ per environment if your subscription restricts regions.')
+param regionAbbr string = 'eus2'
 
 var tags = {
   workload: workload
@@ -168,21 +187,36 @@ output location string = location
 using '../main.bicep'
 param workload = 'contoso'
 param env = 'dev'
+param location = 'eastus2'    // or whatever 0.5 found your subscription allows
+param regionAbbr = 'eus2'     // must match location
 ```
 
-Deploy:
+Validate, preview, then deploy — this is the pattern to use for every deployment for the rest of the project, not just this one:
 ```powershell
+az bicep build --file infra/main.bicep
+
+az deployment group what-if `
+  -g rg-contoso-dev-eus2 `
+  -f infra/main.bicep `
+  -p infra/env/dev.bicepparam
+
 az deployment group create `
   -g rg-contoso-dev-eus2 `
   -f infra/main.bicep `
   -p infra/env/dev.bicepparam
 ```
+`what-if` costs nothing and catches most mistakes (wrong param, disallowed region, naming collision) before Azure actually tries to create anything — always run it first, especially on a shared or budget-constrained subscription.
 
-**0.8 Wire the first GitHub Actions workflow.**
+> **Note if you're driving this through Claude Code in a Git Bash/MSYS shell on Windows (not native PowerShell):** MSYS auto-converts arguments that look like absolute Unix paths, so any `--parameters` value starting with `/subscriptions/...` (a resource ID) gets silently mangled into something like `C:/Program Files/Git/subscriptions/...`. `what-if` will still report `"status": "Succeeded"` with the corrupted value baked into the payload — it doesn't validate that the ID is real, so this fails silently rather than loudly. Fix: prefix the command with `export MSYS_NO_PATHCONV=1`, or run it from native PowerShell instead. Always spot-check resource-ID parameters in the `what-if` JSON output before trusting a green result.
+
+**0.10 Wire the first GitHub Actions workflow.**
 `/.github/workflows/ci-infra.yml` should:
 - On every PR touching `infra/**`, run `az deployment group what-if` against dev and post the diff as a PR comment.
 - On merge to `main`, deploy to dev.
-- Require `id-token: write` permission and the federated credential set up in 0.6.
+- Require `id-token: write` permission and the federated credential set up in 0.8.
+
+> **Claude Code prompt:**
+> *"Generate the GitHub Actions workflow that authenticates via OIDC federated identity (no secrets) and runs `az deployment group what-if` on every PR that touches `infra/**`. Post the diff as a PR comment. Also generate the `az ad app federated-credential` commands I need to run once to set up the federation, parameterized by repo `${owner}/${repo}` and branch."*
 
 ### Validation
 ```powershell
@@ -211,28 +245,69 @@ Outcome: a successful what-if run reported in the PR.
 - Defender for Cloud baseline.
 
 ### Components to deploy (Bicep modules)
-1. `network.bicep` — VNet, 4 subnets (`snet-aks-systempool`, `snet-aks-userpool`, `snet-appgw`, `snet-pe`), NSGs.
+1. `network.bicep` — VNet, 5 subnets (`snet-aks-systempool`, `snet-aks-userpool`, `snet-appgw`, `snet-pe`, `snet-apim`), NSGs, plus the Private DNS zone(s) each subsequent module's Private Endpoint needs (see step 3 below).
 2. `keyvault.bicep` — Key Vault with RBAC, soft-delete, purge protection, Private Endpoint, diagnostic settings → LA.
-3. `identity.bicep` — User-Assigned Managed Identities for the eight services (placeholders for now), plus role definitions and assignments.
-4. `observability.bicep` — Log Analytics workspace, Application Insights, default diagnostic settings.
-5. `defender.bicep` — turn on Defender for Cloud foundational CSPM + Defender for KeyVault.
+3. `identity.bicep` — User-Assigned Managed Identities for the eight services (placeholders for now). Role *assignments* are **not** created here — see step 4.
+4. `observability.bicep` — Log Analytics workspace, workspace-based Application Insights, subscription Activity Log routed to the workspace.
+5. `defender.bicep` — turn on Defender for Cloud foundational CSPM + Defender for Key Vault. **Subscription-scoped** (`targetScope = 'subscription'`), not resource-group-scoped — `Microsoft.Security/pricings` has no `location`/`tags` property and applies to the whole subscription. If dev/test/prod share one subscription, deploy this module once total, not once per environment; calling it repeatedly is harmless (idempotent) but redundant. Defender for Key Vault at `Standard` tier is billed per vault — check this is acceptable before deploying on a cost-constrained subscription.
 
 ### Step-by-step
-1. Implement modules one at a time. Have Claude Code generate each module — see playbook §3 for the exact prompt to use.
-2. Wire them into `main.bicep` in this order: observability → network → keyvault → identity → defender.
-3. Add Private DNS zones for: `privatelink.vaultcore.azure.net`, `privatelink.documents.azure.com`, `privatelink.database.windows.net`, `privatelink.blob.core.windows.net`, `privatelink.search.windows.net`, `privatelink.openai.azure.com`, `privatelink.azurecr.io`. Link each to the VNet.
-4. Confirm Private Endpoint pattern works end-to-end: from a temporary jumpbox in the VNet, resolve and connect to the Key Vault by its private IP only.
+1. Implement modules one at a time.
+
+   > **Claude Code prompt — network.bicep:**
+   > *"Generate `infra/modules/network.bicep` for a VNet `10.20.0.0/16` with subnets `snet-aks-systempool` (10.20.0.0/22), `snet-aks-userpool` (10.20.4.0/22), `snet-appgw` (10.20.8.0/24), `snet-pe` (10.20.9.0/24), `snet-apim` (10.20.10.0/24). Add baseline NSGs to each. Output the subnet IDs."*
+
+   > **Claude Code prompt — keyvault.bicep:**
+   > *"Generate `infra/modules/keyvault.bicep` for a Premium Key Vault with RBAC auth, soft-delete, purge protection, disabled public network access, a Private Endpoint in `snet-pe`, and diagnostic settings for `AuditEvent` and `AllMetrics` to LA workspace `<id>`. Accept `tags`, `keyVaultName`, `subnetId`, `privateDnsZoneId`, `laWorkspaceId` as params. Output `vaultUri`."*
+
+   > **Claude Code prompt — observability, identity, defender:**
+   > *"Can you generate observability, identity and defender bicep files?"* — vague on purpose; a competent assistant should already know these three from the components list above and pull the spec from `docs/02-Architecture.md` and this guide rather than needing everything spelled out again. If it doesn't, that's a signal your `CLAUDE.md` isn't pointing it at the right docs.
+
+2. Add Private DNS zones **incrementally, one per module, not all upfront.** Each module that provisions a Private Endpoint also provisions the matching `privatelink.*` zone and links it to the VNet — e.g. `network.bicep` creates `privatelink.vaultcore.azure.net` because `keyvault.bicep`'s Private Endpoint needs it; `cosmos.bicep` (Phase 3) will create `privatelink.documents.azure.net` when it needs it, and so on. This was a deliberate change from an earlier draft of this guide, which had all seven zones (`vaultcore`, `documents`, `database.windows`, `blob.core`, `search.windows`, `openai`, `azurecr`) created upfront in Phase 1 — that meant several zones sitting unused for phases, with no resource yet to link them to. Creating each zone next to the resource that needs it keeps the two from drifting apart.
+3. Wire modules into `main.bicep` in this order: observability → network → keyvault → identity → defender. `defender` additionally needs `scope: subscription()` on its module declaration, since `main.bicep` itself is resource-group-scoped.
+4. **Deploy each module as you finish it** — don't wait until all five are written. For each:
+   ```powershell
+   az bicep build --file infra/modules/<module>.bicep
+
+   az deployment group what-if `
+     -g rg-contoso-dev-eus2 `
+     -f infra/modules/<module>.bicep `
+     -p <params...>
+
+   az deployment group create `
+     -g rg-contoso-dev-eus2 `
+     -f infra/modules/<module>.bicep `
+     -p <params...>
+   ```
+   `defender.bicep` deploys at subscription scope instead — use `az deployment sub what-if`/`create` with `--location <region>` instead of `-g <resource group>`.
+
+   Once all five are wired into `main.bicep` and uncommented, switch to deploying the whole thing at once via `main.bicep` + the appropriate `infra/env/<env>.bicepparam`, same as Phase 0.9 — deploying modules individually here is a Phase-1-only bootstrapping step, not the long-term pattern.
+5. Confirm the Private Endpoint pattern actually works — see Validation below. A full network-path test (resolving the Key Vault's private DNS name and connecting from inside the VNet) needs a jumpbox or an AKS pod, neither of which exists yet at this point in Phase 1 — treat that as a deferred check, not a blocker. Re-run it once Phase 2's AKS cluster exists, or once you've deliberately decided on a jumpbox access pattern (see `docs/naming.md`'s note on `snet-jumpbox`/`AzureBastionSubnet`, still unimplemented as of this writing).
 
 ### Validation
-- `az keyvault show` reveals public network access disabled.
-- `Resolve-DnsName <kv-name>.vault.azure.net` from the jumpbox returns a 10.x.x.x address.
-- Defender for Cloud dashboard shows secure score baseline.
+Achievable now, no jumpbox/AKS required:
+```powershell
+az keyvault show -n <kv-name> -g rg-contoso-dev-eus2 `
+  --query "{publicNetworkAccess:properties.publicNetworkAccess, rbac:properties.enableRbacAuthorization, softDelete:properties.enableSoftDelete, purgeProtection:properties.enablePurgeProtection}"
+# Expect: Disabled / true / true / true
+
+az network private-endpoint show -n pep-<kv-name> -g rg-contoso-dev-eus2 `
+  --query "privateLinkServiceConnections[0].privateLinkServiceConnectionState.status"
+# Expect: Approved
+
+az security pricing show --name KeyVaults --query pricingTier -o tsv
+az security pricing show --name CloudPosture --query pricingTier -o tsv
+```
+Deferred until a jumpbox or AKS pod exists (see step 5 above):
+- `Resolve-DnsName <kv-name>.vault.azure.net` from inside the VNet returns a `10.x.x.x` address, not a public IP.
+- An actual connection to the vault succeeds from inside the VNet and fails from outside it.
 
 ### Exit criteria
-- [ ] Empty VNet with subnets and NSGs deployed.
-- [ ] Key Vault accessible only via Private Endpoint; no access policies (RBAC only).
-- [ ] LA workspace receiving Activity Logs.
-- [ ] Defender CSPM enabled.
+- [ ] VNet with 5 subnets and NSGs deployed.
+- [ ] Key Vault accessible only via Private Endpoint; no access policies (RBAC only); confirmed via `az keyvault show`, not just "should be."
+- [ ] LA workspace receiving Activity Logs (`az monitor diagnostic-settings subscription show` lists the setting).
+- [ ] 8 managed identities exist (`az identity list -g rg-contoso-dev-eus2 -o table`).
+- [ ] Defender CSPM enabled at subscription scope.
 
 ---
 
@@ -263,6 +338,9 @@ Bicep for AKS should include:
 - `ingressProfile.webAppRouting.enabled = true`
 - Diagnostic settings to the LA workspace.
 
+> **Claude Code prompt:**
+> *"Generate `infra/modules/aks.bicep` with: Workload Identity + OIDC issuer enabled, Application Routing add-on, Azure Monitor add-on, Defender add-on, Azure CNI overlay, Cilium dataplane, one system node pool (taint `CriticalAddonsOnly`), one user node pool (Standard_D4s_v5, 2 nodes, autoscale 2-5). Wire diagnostic settings to LA."*
+
 Attach ACR to AKS so pulls use the kubelet identity:
 ```powershell
 az aks update -n aks-contoso-dev-eus2 -g rg-contoso-dev-eus2 --attach-acr acrcontosodeveus2
@@ -270,6 +348,9 @@ az aks update -n aks-contoso-dev-eus2 -g rg-contoso-dev-eus2 --attach-acr acrcon
 
 **2.2 Write `catalog-svc`.**
 Start small: a .NET 8 minimal API or Node Fastify that returns three hard-coded products. Add OpenTelemetry from day one (it's harder to retrofit).
+
+> **Claude Code prompt:**
+> *"Scaffold `apps/catalog-svc` as a .NET 8 minimal API with three endpoints: `GET /api/products`, `GET /api/products/{id}`, `GET /healthz`. Use the Microsoft.Azure.Cosmos SDK with `DefaultAzureCredential` (no keys). Add the OpenTelemetry packages and wire the App Insights exporter from `APPLICATIONINSIGHTS_CONNECTION_STRING` env var. For now, fall back to in-memory canned products if Cosmos config is absent. Include unit tests."*
 
 **2.3 Containerize.**
 Multi-stage Dockerfile, distroless or Alpine base. No root user. Read-only filesystem. Have Claude Code generate it.
@@ -298,6 +379,16 @@ az identity federated-credential create `
 
 **2.6 Deploy with Kustomize.**
 `k8s/base/catalog-svc/`: `deployment.yaml`, `service.yaml`, `serviceaccount.yaml`, `kustomization.yaml`, plus an `ingress.yaml` using the App Routing add-on's `webapprouting.kubernetes.azure.com` ingress class.
+
+> **Claude Code prompt:**
+> *"Write the Kustomize base for `catalog-svc` and a `dev` overlay that:
+> - Annotates the SA with the MI client ID.
+> - Labels the Pod for Azure Workload Identity.
+> - Sets resource requests/limits.
+> - Sets `runAsNonRoot: true` and `readOnlyRootFilesystem: true`.
+> - Exposes an Ingress via the Application Routing add-on.
+> - Mounts a configmap with the Cosmos endpoint URL.
+> No secrets."*
 
 ```powershell
 kubectl apply -k k8s/overlays/dev
@@ -338,11 +429,16 @@ Scale on CPU `targetAverageUtilization: 70`, min 2, max 5.
 ### Components to deploy
 1. `cosmos.bicep` — account, database, three containers (`products`, `reviews`, `chat-history`), autoscale, continuous backup, PE.
 2. `sql.bicep` — server + DB, Entra-only auth, Always Encrypted setup hooks, PE, auditing to LA.
-3. `storage.bicep` — StorageV2 account with containers `reviews-images-pending`, `reviews-images-approved`, `public-thumbnails`; lifecycle policy; PE.
+3. `storage.bicep` — StorageV2 account with a `reviews-images` container (private; `pending/` and `approved/` are blob **path prefixes** inside it, not separate containers — see `docs/02-Architecture.md` §3.6's moderation flow) plus a separate `public-thumbnails` container; lifecycle policy; PE.
 4. `redis.bicep` — Standard tier in dev (Premium with VNet injection in prod).
 5. `service-bus.bicep` — namespace, queue `review-moderation-jobs`, topic `review-status-changed`.
 
 ### Step-by-step
+
+Start with `cosmos.bicep`:
+
+> **Claude Code prompt:**
+> *"Generate `infra/modules/cosmos.bicep` for an Azure Cosmos DB for NoSQL account with: continuous backup, public network access disabled, Private Endpoint in `snet-pe`, a database `contoso-retail`, three containers (`products` PK `/categoryId`, `reviews` PK `/productId`, `chat-history` PK `/userId` with 30-day TTL). Use autoscale 1k-4k RU per container. Output the account endpoint."*
 
 **3.1 Seed Cosmos with a real catalog.**
 Write a small script (`scripts/seed-catalog.ts`) that loads 50 products from `data/products.json` into Cosmos. Run it once from your machine via Entra auth (you may need to temporarily grant your user the Data Contributor role on the container, then revoke).
@@ -350,7 +446,12 @@ Write a small script (`scripts/seed-catalog.ts`) that loads 50 products from `da
 **3.2 Update `catalog-svc` to read from Cosmos.**
 - Use the official SDK with `DefaultAzureCredential` (no keys).
 - Implement cache-aside with Redis: try Redis, miss → Cosmos → set in Redis with TTL 300s.
-- Assign the service's MI the `Cosmos DB Built-in Data Contributor` role scoped to the `products` container.
+- Assign the service's MI the `Cosmos DB Built-in Data **Reader**` role scoped to the `products` container — not Contributor. `catalog-svc` is read-only per `docs/02-Architecture.md` §3.3; granting write access it never uses violates the project's own least-privilege principle (§4/§5).
+
+> **Claude Code prompt:**
+> *"Add to `cosmos.bicep` data-plane role assignments granting the `mi-catalog-svc` MI the `Cosmos DB Built-in Data Reader` role scoped to the `products` container only."*
+>
+> *"Update `catalog-svc` so it reads from Cosmos with cache-aside on Redis. Use `DefaultAzureCredential` for both. The Redis password is in Key Vault, but prefer using Entra auth for Redis Enterprise; for Standard Redis use Key Vault. Show me both options and pick the simpler one for dev."*
 
 **3.3 Build `review-svc`.**
 - POST `/api/reviews` validates JWT, persists to Cosmos `reviews` container with status `pending`, returns 202.
@@ -423,6 +524,16 @@ async for message in service_bus_receiver:
     await message.complete()
 ```
 
+> **Claude Code prompt:**
+> *"Build the `moderation-worker` as a Python `azure-servicebus` consumer. For each message:
+> 1. Pull review from Cosmos.
+> 2. Call AI Language `analyze_sentiment` and `extract_key_phrases`.
+> 3. Call AI Content Safety on the text; if image present, call Vision tags + Content Safety on the image bytes.
+> 4. If max severity < `MODERATION_THRESHOLD` (env var), set status to `approved`; else `needs-review`.
+> 5. PATCH the Cosmos doc.
+> 6. Publish `review.scored` to Event Hubs.
+> Use `DefaultAzureCredential` everywhere. Add structured logging with correlation ID from the message properties. Add a KEDA `ScaledObject` triggering on queue depth, min 0 max 10."*
+
 **4.3 Add KEDA ScaledObject.**
 Trigger: `azure-servicebus`. Min 0, max 10 replicas. Use Workload Identity for KEDA auth.
 
@@ -436,6 +547,15 @@ Chat orchestration in `assistant-svc`:
 4. Stream completion from OpenAI back to client.
 5. Append citations.
 6. Save conversation turn to `chat-history` Cosmos container.
+
+> **Claude Code prompt:**
+> *"Build `assistant-svc` as a FastAPI app with `POST /chat` that streams Server-Sent Events. Implementation:
+> 1. Embed user query with `text-embedding-3-large` via Azure OpenAI.
+> 2. Hybrid query Azure AI Search `products-index` (vector + BM25 + semantic re-ranker), top 5.
+> 3. Compose prompt with strict system message confining the assistant to retail.
+> 4. Call `gpt-4o` deployment with streaming; stream back to the client.
+> 5. Append a citations object.
+> 6. Persist the turn to Cosmos `chat-history`. Use MI auth. No keys."*
 
 **4.5 Apply rate limits at APIM.**
 Per-subscription policy enforcing 20 calls/min/user.
@@ -488,8 +608,14 @@ WHERE eventType = 'review.scored'
 GROUP BY productCategory, TumblingWindow(minute, 1)
 ```
 
+> **Claude Code prompt:**
+> *"Generate the Stream Analytics query that consumes from `eventhub-domain`, filters events where `eventType = 'review.scored'`, computes 1-minute tumbling aggregates of count and avg sentiment grouped by `productCategory`, and writes to a Cosmos `realtime-metrics` container and a Power BI streaming dataset. Provide the Bicep for the SA job too."*
+
 **5.3 Lakehouse build.**
 Capture lands raw events as Avro in `bronze/`. A Synapse Spark notebook converts to Parquet under `silver/` partitioned by date. Another notebook builds the `gold/` star schema.
+
+> **Claude Code prompt:**
+> *"Write a Synapse Spark notebook (PySpark) that reads the Avro files Capture is dropping at `abfss://bronze@<adls>.dfs.core.windows.net/eventhub-domain/...`, parses the CloudEvents envelope, flattens to a table, and writes Parquet to `abfss://silver@.../reviews/` partitioned by `ingest_date`. Idempotent (use `mode='overwrite'` with partition overwrite mode `dynamic`)."*
 
 **5.4 Power BI.**
 - Connect to Synapse serverless via DirectQuery for the warehouse tiles.
@@ -512,13 +638,31 @@ Run scans; confirm PII columns (e.g., `email` in SQL) are auto-classified.
 
 ### Components/configurations
 1. **Front Door + WAF** in front of everything; lock APIM ingress to Front Door.
-2. **APIM** in front of public APIs with policies: JWT validation, rate limit, request body validation, correlation ID injection.
-3. **Defender plans**: Containers, Key Vault, SQL, Storage, App Service, Resource Manager.
+2. **APIM** (`apim.bicep`) in front of public APIs with policies: JWT validation, rate limit, request body validation, correlation ID injection.
+3. **Additional Defender plans**: Containers, SQL, Storage, App Service, Resource Manager. (CloudPosture and Key Vault were already enabled in `defender.bicep` back in Phase 1 — don't recreate them, extend that same module with the additional plans.)
 4. **Microsoft Sentinel** with starter analytics rules.
 5. **Network hardening**: NSGs reviewed, Private Endpoints everywhere, public access disabled on every data store.
 6. **Observability**: Workbooks, alerts, dashboards.
 7. **Cost**: budgets and action groups; auto-shutdown of dev outside business hours via a Logic App.
 8. **DR drill**: practice the runbook.
+
+### Step-by-step
+
+**6.1 Build `apim.bicep`.**
+
+> **Claude Code prompt:**
+> *"Generate `infra/modules/apim.bicep` for an APIM Standard v2 instance in `snet-apim` with: managed identity, JWT validation policy template (validating tokens from External ID), rate-limit-by-key policy (20 calls/min per user), correlation header injection. Apply to a sample `catalog-api` operation."*
+
+**6.2 Extend `defender.bicep`** with the additional plans listed above, rather than creating a second module — it's still one subscription-scoped resource type (`Microsoft.Security/pricings`), just more plan names.
+
+**6.3 Front Door + WAF**, locking APIM/AppGW ingress so it's only reachable via Front Door.
+
+**6.4 Sentinel analytics rules.**
+
+> **Claude Code prompt:**
+> *"Write KQL Sentinel analytics rules for: (1) impossible-travel sign-ins for users with the `Platform-Admin` role, (2) > 10 Key Vault access denials in 10 minutes from a single principal, (3) container privilege escalation events. Output as Bicep `analyticsRules` resources."*
+
+**6.5 Alerts, budgets, DR drill** — see the sample alert set below and `docs/runbooks/dr.md`.
 
 ### Sample alert set (Bicep / KQL)
 - p95 latency > 800ms over 10m on any service.

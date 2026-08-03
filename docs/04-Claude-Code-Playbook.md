@@ -36,6 +36,7 @@ Claude Code reads `CLAUDE.md` at the repo root and any `CLAUDE.md` in subdirecto
 - **Long paths.** If Claude Code (or its tools) complain about paths over 260 chars, ensure Git long-path support is on: `git config --global core.longpaths true`, and enable Windows long paths (`New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force`).
 - **Shell that Claude runs commands in.** Claude Code uses your default shell. If you're on PowerShell, ask it to write PowerShell one-liners (or say "use bash" if you'd rather it write for WSL). Being explicit avoids getting Linux-only tricks like `$(...)` command substitution.
 - **WSL2 alternative.** If you'd rather run Claude Code from Ubuntu inside WSL2, install Node in WSL (`sudo apt install nodejs npm`) then `npm install -g @anthropic-ai/claude-code`. The rest of this playbook still applies; you'll get bash-native commands from Claude by default.
+- **Git Bash path-mangling on `az` commands.** If Claude Code's Bash tool runs under Git Bash/MSYS on Windows (rather than native PowerShell), MSYS auto-converts arguments that look like absolute Unix paths. Any `az ... --parameters` value starting with `/subscriptions/...` (any Azure resource ID) gets silently rewritten to something like `C:/Program Files/Git/subscriptions/...`. The dangerous part: `az deployment group what-if` still returns `"status": "Succeeded"` with the corrupted ID baked into the payload — it doesn't validate the ID is real, so this fails silently instead of erroring. Hit this for real wiring `keyvault.bicep`'s `subnetId`/`privateDnsZoneId` params. Fix: `export MSYS_NO_PATHCONV=1` before the command, or use native PowerShell. Get in the habit of spot-checking resource-ID parameters in `what-if` JSON output rather than trusting a green `status` alone.
 
 ## 2. The `CLAUDE.md` you should commit at the repo root
 
@@ -124,68 +125,9 @@ hyphens: `acrcontosodeveus2`.
 ### 3.6 Document-with-citations pattern
 > "I want to enable Customer-Managed Keys on the ACR I deployed. Walk me through the steps as a numbered list, with the exact `az` commands and a Bicep snippet of what changes. Cite the Microsoft Learn pages you used."
 
-## 4. Phase-by-phase prompts you can paste
+## 4. Phase-by-phase prompts
 
-### Phase 0
-- *"Generate the GitHub Actions workflow that authenticates via OIDC federated identity (no secrets) and runs `az deployment group what-if` on every PR that touches `infra/**`. Post the diff as a PR comment. Also generate the `az ad app federated-credential` commands I need to run once to set up the federation, parameterized by repo `${owner}/${repo}` and branch."*
-
-- *"Generate `docs/naming.md` documenting the CAF-style naming convention I've adopted and listing the exact names this project will use for each resource type, separated by environment."*
-
-### Phase 1
-- *"Generate `infra/modules/network.bicep` for a VNet `10.20.0.0/16` with subnets `snet-aks-systempool` (10.20.0.0/22), `snet-aks-userpool` (10.20.4.0/22), `snet-appgw` (10.20.8.0/24), `snet-pe` (10.20.9.0/24), `snet-apim` (10.20.10.0/24). Add baseline NSGs to each. Output the subnet IDs."*
-
-- *"Generate `infra/modules/keyvault.bicep` for a Premium Key Vault with RBAC auth, soft-delete, purge protection, disabled public network access, a Private Endpoint in `snet-pe`, and diagnostic settings for `AuditEvent` and `AllMetrics` to LA workspace `<id>`. Accept `tags`, `keyVaultName`, `subnetId`, `privateDnsZoneId`, `laWorkspaceId` as params. Output `vaultUri`."*
-
-- *"Generate Private DNS zones for: vaultcore, documents, database.windows, blob.core, search.windows, openai, azurecr, file.core, table.core, queue.core. Link them to the VNet. Output a `privateDnsZoneIds` object."*
-
-### Phase 2
-- *"Generate `infra/modules/aks.bicep` with: Workload Identity + OIDC issuer enabled, Application Routing add-on, Azure Monitor add-on, Defender add-on, Azure CNI overlay, Cilium dataplane, one system node pool (taint `CriticalAddonsOnly`), one user node pool (Standard_D4s_v5, 2 nodes, autoscale 2-5). Wire diagnostic settings to LA."*
-
-- *"Scaffold `apps/catalog-svc` as a .NET 8 minimal API with three endpoints: `GET /api/products`, `GET /api/products/{id}`, `GET /healthz`. Use the Microsoft.Azure.Cosmos SDK with `DefaultAzureCredential` (no keys). Add the OpenTelemetry packages and wire the App Insights exporter from `APPLICATIONINSIGHTS_CONNECTION_STRING` env var. For now, fall back to in-memory canned products if Cosmos config is absent. Include unit tests."*
-
-- *"Write the Kustomize base for `catalog-svc` and a `dev` overlay that:
-> - Annotates the SA with the MI client ID.
-> - Labels the Pod for Azure Workload Identity.
-> - Sets resource requests/limits.
-> - Sets `runAsNonRoot: true` and `readOnlyRootFilesystem: true`.
-> - Exposes an Ingress via the Application Routing add-on.
-> - Mounts a configmap with the Cosmos endpoint URL.
-> No secrets."*
-
-### Phase 3
-- *"Generate `infra/modules/cosmos.bicep` for an Azure Cosmos DB for NoSQL account with: continuous backup, public network access disabled, Private Endpoint in `snet-pe`, a database `contoso-retail`, three containers (`products` PK `/categoryId`, `reviews` PK `/productId`, `chat-history` PK `/userId` with 30-day TTL). Use autoscale 1k-4k RU per container. Output the account endpoint."*
-
-- *"Add to `cosmos.bicep` data-plane role assignments granting the `mi-catalog-svc` MI the `Cosmos DB Built-in Data Reader` role scoped to the `products` container only."*
-
-- *"Update `catalog-svc` so it reads from Cosmos with cache-aside on Redis. Use `DefaultAzureCredential` for both. The Redis password is in Key Vault, but prefer using Entra auth for Redis Enterprise; for Standard Redis use Key Vault. Show me both options and pick the simpler one for dev."*
-
-### Phase 4
-- *"Build the `moderation-worker` as a Python `azure-servicebus` consumer. For each message:
-> 1. Pull review from Cosmos.
-> 2. Call AI Language `analyze_sentiment` and `extract_key_phrases`.
-> 3. Call AI Content Safety on the text; if image present, call Vision tags + Content Safety on the image bytes.
-> 4. If max severity < `MODERATION_THRESHOLD` (env var), set status to `approved`; else `needs-review`.
-> 5. PATCH the Cosmos doc.
-> 6. Publish `review.scored` to Event Hubs.
-> Use `DefaultAzureCredential` everywhere. Add structured logging with correlation ID from the message properties. Add a KEDA `ScaledObject` triggering on queue depth, min 0 max 10."*
-
-- *"Build `assistant-svc` as a FastAPI app with `POST /chat` that streams Server-Sent Events. Implementation:
-> 1. Embed user query with `text-embedding-3-large` via Azure OpenAI.
-> 2. Hybrid query Azure AI Search `products-index` (vector + BM25 + semantic re-ranker), top 5.
-> 3. Compose prompt with strict system message confining the assistant to retail.
-> 4. Call `gpt-4o` deployment with streaming; stream back to the client.
-> 5. Append a citations object.
-> 6. Persist the turn to Cosmos `chat-history`. Use MI auth. No keys."*
-
-### Phase 5
-- *"Generate the Stream Analytics query that consumes from `eventhub-domain`, filters events where `eventType = 'review.scored'`, computes 1-minute tumbling aggregates of count and avg sentiment grouped by `productCategory`, and writes to a Cosmos `realtime-metrics` container and a Power BI streaming dataset. Provide the Bicep for the SA job too."*
-
-- *"Write a Synapse Spark notebook (PySpark) that reads the Avro files Capture is dropping at `abfss://bronze@<adls>.dfs.core.windows.net/eventhub-domain/...`, parses the CloudEvents envelope, flattens to a table, and writes Parquet to `abfss://silver@.../reviews/` partitioned by `ingest_date`. Idempotent (use `mode='overwrite'` with partition overwrite mode `dynamic`)."*
-
-### Phase 6
-- *"Generate `infra/modules/apim.bicep` for an APIM Standard v2 instance in `snet-apim` with: managed identity, JWT validation policy template (validating tokens from External ID), rate-limit-by-key policy (20 calls/min per user), correlation header injection. Apply to a sample `catalog-api` operation."*
-
-- *"Write KQL Sentinel analytics rules for: (1) impossible-travel sign-ins for users with the `Platform-Admin` role, (2) > 10 Key Vault access denials in 10 minutes from a single principal, (3) container privilege escalation events. Output as Bicep `analyticsRules` resources."*
+These used to live here as a standalone list, separate from the steps they belonged to. They're now inlined directly into `docs/03-Implementation-Guide.md`, next to the step each one produces — e.g. the `network.bicep` prompt sits right at Phase 1 step 1, the `catalog-svc` scaffold prompt sits at Phase 2.2. Look there when you're actually executing a phase; the patterns in §3 above are what to reach for when you need something the guide doesn't already have a prompt for.
 
 ## 5. Things Claude Code is *especially* good at on Azure projects
 - Drafting Bicep modules and explaining their parameters.
