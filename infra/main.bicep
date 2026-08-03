@@ -17,6 +17,9 @@ param env string
 @description('Region for all resources')
 param location string = resourceGroup().location
 
+@description('CAF region abbreviation used in resource names — must match `location`. Not derived automatically since Bicep has no location-to-abbreviation mapping. See docs/naming.md and docs/decisions/ADR-001-dev-region-eastus.md; dev uses eus (eastus), test/prod use eus2 (eastus2) pending confirmation their subscriptions allow it.')
+param regionAbbr string = 'eus2'
+
 // -----------------------------------------------------------------------------
 // Common tags applied to every resource
 // -----------------------------------------------------------------------------
@@ -26,11 +29,6 @@ var tags = {
   env: env
   managedBy: 'bicep'
 }
-
-// CAF region abbreviation — kept as a var (not a param) since eus2 is the
-// only region in scope today; see docs/naming.md. Passed explicitly into
-// modules that build their own names so it can't drift from their defaults.
-var regionAbbr = 'eus2'
 
 // Resource names computed here (rather than inside their module) because
 // they're needed as inputs by other modules, e.g. keyVaultName feeds

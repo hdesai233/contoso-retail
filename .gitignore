@@ -35,6 +35,11 @@ main.json
 .azd/
 infra/**/*.json
 
+# Carve-out: the Python "env/" ignore rule above also matches infra/env/,
+# which holds real, must-be-tracked *.bicepparam files, not a virtualenv.
+!/infra/env/
+!/infra/env/**
+
 # VS Code / IDE
 .vscode/*
 !.vscode/settings.json.example
