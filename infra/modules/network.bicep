@@ -188,8 +188,10 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {
 
 // -----------------------------------------------------------------------------
 // Private DNS zones — one per data-service type that needs Private Endpoint
-// name resolution, linked to this VNet. Only Key Vault's zone exists so far;
-// add more here as their modules (Cosmos, SQL, Storage, Redis, ...) land.
+// name resolution, linked to this VNet. Added incrementally, one per module,
+// as each lands (Key Vault in Phase 1, ACR in Phase 2) — see
+// docs/03-Implementation-Guide.md Phase 1 step 2 for why. Add more here as
+// Cosmos, SQL, Storage, AI Search, OpenAI, etc. land in later phases.
 // -----------------------------------------------------------------------------
 
 resource keyVaultPrivateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
@@ -200,6 +202,25 @@ resource keyVaultPrivateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' =
 
 resource keyVaultPrivateDnsZoneVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
   parent: keyVaultPrivateDnsZone
+  name: '${vnetName}-link'
+  location: 'global'
+  tags: tags
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: vnet.id
+    }
+  }
+}
+
+resource acrPrivateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.azurecr.io'
+  location: 'global'
+  tags: tags
+}
+
+resource acrPrivateDnsZoneVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: acrPrivateDnsZone
   name: '${vnetName}-link'
   location: 'global'
   tags: tags
@@ -223,3 +244,4 @@ output appGwSubnetId string = resourceId('Microsoft.Network/virtualNetworks/subn
 output privateEndpointSubnetId string = resourceId('Microsoft.Network/virtualNetworks/subnets', vnet.name, 'snet-pe')
 output apimSubnetId string = resourceId('Microsoft.Network/virtualNetworks/subnets', vnet.name, 'snet-apim')
 output keyVaultPrivateDnsZoneId string = keyVaultPrivateDnsZone.id
+output acrPrivateDnsZoneId string = acrPrivateDnsZone.id

@@ -49,7 +49,7 @@ var keyVaultName = 'kv-${workload}-${env}-${regionAbbr}-01'
 // module defender      'modules/defender.bicep'      = { name: 'defender', scope: subscription(), params: {} }
 
 // Phase 2
-// module acr           'modules/acr.bicep'           = { name: 'acr', ... }
+// module acr           'modules/acr.bicep'           = { name: 'acr', params: { workload: workload, env: env, location: location, regionAbbr: regionAbbr, tags: tags, subnetId: network.outputs.privateEndpointSubnetId, privateDnsZoneId: network.outputs.acrPrivateDnsZoneId, laWorkspaceId: observability.outputs.laWorkspaceId, keyVaultName: keyVaultName } }
 // module aks           'modules/aks.bicep'           = { name: 'aks', ... }
 
 // Phase 3
