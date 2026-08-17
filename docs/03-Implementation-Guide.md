@@ -245,7 +245,7 @@ Outcome: a successful what-if run reported in the PR.
 - Defender for Cloud baseline.
 
 ### Components to deploy (Bicep modules)
-1. `network.bicep` — VNet, 5 subnets (`snet-aks-systempool`, `snet-aks-userpool`, `snet-appgw`, `snet-pe`, `snet-apim`), NSGs, plus the Private DNS zone(s) each subsequent module's Private Endpoint needs (see step 3 below).
+1. `network.bicep` — VNet, 4 subnets (`snet-appgw`, `snet-pe`, `snet-apim`, `snet-aca`), NSGs, plus the Private DNS zone(s) each subsequent module's Private Endpoint needs (see step 3 below). `snet-aca` hosts the Phase 2 Container Apps environment — see ADR-002; it's sized `/23` and deliberately **not** delegated, since the Consumption-only environment type requires exactly that.
 2. `keyvault.bicep` — Key Vault with RBAC, soft-delete, purge protection, Private Endpoint, diagnostic settings → LA.
 3. `identity.bicep` — User-Assigned Managed Identities for the eight services (placeholders for now). Role *assignments* are **not** created here — see step 4.
 4. `observability.bicep` — Log Analytics workspace, workspace-based Application Insights, subscription Activity Log routed to the workspace.
@@ -255,7 +255,7 @@ Outcome: a successful what-if run reported in the PR.
 1. Implement modules one at a time.
 
    > **Claude Code prompt — network.bicep:**
-   > *"Generate `infra/modules/network.bicep` for a VNet `10.20.0.0/16` with subnets `snet-aks-systempool` (10.20.0.0/22), `snet-aks-userpool` (10.20.4.0/22), `snet-appgw` (10.20.8.0/24), `snet-pe` (10.20.9.0/24), `snet-apim` (10.20.10.0/24). Add baseline NSGs to each. Output the subnet IDs."*
+   > *"Generate `infra/modules/network.bicep` for a VNet `10.20.0.0/16` with subnets `snet-appgw` (10.20.8.0/24), `snet-pe` (10.20.9.0/24), `snet-apim` (10.20.10.0/24), `snet-aca` (10.20.16.0/23, not delegated — Consumption-only Container Apps environment). Add baseline NSGs to each. Output the subnet IDs."*
 
    > **Claude Code prompt — keyvault.bicep:**
    > *"Generate `infra/modules/keyvault.bicep` for a Premium Key Vault with RBAC auth, soft-delete, purge protection, disabled public network access, a Private Endpoint in `snet-pe`, and diagnostic settings for `AuditEvent` and `AllMetrics` to LA workspace `<id>`. Accept `tags`, `keyVaultName`, `subnetId`, `privateDnsZoneId`, `laWorkspaceId` as params. Output `vaultUri`."*
@@ -282,10 +282,10 @@ Outcome: a successful what-if run reported in the PR.
    `defender.bicep` deploys at subscription scope instead — use `az deployment sub what-if`/`create` with `--location <region>` instead of `-g <resource group>`.
 
    Once all five are wired into `main.bicep` and uncommented, switch to deploying the whole thing at once via `main.bicep` + the appropriate `infra/env/<env>.bicepparam`, same as Phase 0.9 — deploying modules individually here is a Phase-1-only bootstrapping step, not the long-term pattern.
-5. Confirm the Private Endpoint pattern actually works — see Validation below. A full network-path test (resolving the Key Vault's private DNS name and connecting from inside the VNet) needs a jumpbox or an AKS pod, neither of which exists yet at this point in Phase 1 — treat that as a deferred check, not a blocker. Re-run it once Phase 2's AKS cluster exists, or once you've deliberately decided on a jumpbox access pattern (see `docs/naming.md`'s note on `snet-jumpbox`/`AzureBastionSubnet`, still unimplemented as of this writing).
+5. Confirm the Private Endpoint pattern actually works — see Validation below. A full network-path test (resolving the Key Vault's private DNS name and connecting from inside the VNet) needs a jumpbox or a running Container App, neither of which exists yet at this point in Phase 1 — treat that as a deferred check, not a blocker. Re-run it once Phase 2's Container Apps environment exists, or once you've deliberately decided on a jumpbox access pattern (see `docs/naming.md`'s note on `snet-jumpbox`/`AzureBastionSubnet`, still unimplemented as of this writing).
 
 ### Validation
-Achievable now, no jumpbox/AKS required:
+Achievable now, no jumpbox/Container App required:
 ```powershell
 az keyvault show -n <kv-name> -g rg-contoso-dev-eus2 `
   --query "{publicNetworkAccess:properties.publicNetworkAccess, rbac:properties.enableRbacAuthorization, softDelete:properties.enableSoftDelete, purgeProtection:properties.enablePurgeProtection}"
@@ -303,7 +303,7 @@ Deferred until a jumpbox or AKS pod exists (see step 5 above):
 - An actual connection to the vault succeeds from inside the VNet and fails from outside it.
 
 ### Exit criteria
-- [ ] VNet with 5 subnets and NSGs deployed.
+- [ ] VNet with 4 subnets and NSGs deployed.
 - [ ] Key Vault accessible only via Private Endpoint; no access policies (RBAC only); confirmed via `az keyvault show`, not just "should be."
 - [ ] LA workspace receiving Activity Logs (`az monitor diagnostic-settings subscription show` lists the setting).
 - [ ] 8 managed identities exist (`az identity list -g rg-contoso-dev-eus2 -o table`).
@@ -311,40 +311,36 @@ Deferred until a jumpbox or AKS pod exists (see step 5 above):
 
 ---
 
-## Phase 2 — Containers, AKS, the first microservice
+## Phase 2 — Containers, Azure Container Apps, the first microservice
 
-**Goal:** prove the full container path: write a service, containerize it, push to ACR, deploy to AKS, ingress works, MI works.
+**Goal:** prove the full container path: write a service, containerize it, push to ACR, deploy to Azure Container Apps, ingress works, MI works.
+
+Originally this phase built an AKS cluster. Three real deployment attempts hit a hard subscription vCPU quota wall no cluster configuration could satisfy — full account, including the exact errors, in `docs/decisions/ADR-002-aks-to-container-apps.md`. `acr.bicep` from the original plan is unaffected and unchanged; only the compute target changed.
 
 ### Learning objectives
 - Dockerfile authoring, multi-stage builds, distroless base images.
 - ACR with Private Endpoint, customer-managed keys, image scanning.
-- AKS with Workload Identity Federation, Application Routing add-on.
-- Kustomize overlays, ConfigMaps, Secrets via CSI driver.
-- HPA, resource requests/limits.
+- Container Apps: Consumption-only environments, Workload Identity via direct UAMI binding, native KEDA scale rules.
+- Resource requests (`cpu`/`memory`) per container app; no separate HPA object — scaling is part of the app's own definition.
 
 ### Components to deploy
-1. `acr.bicep` — Azure Container Registry (Premium), Private Endpoint, customer-managed key from KV.
-2. `aks.bicep` — AKS, zone-redundant in prod, Workload Identity enabled, Application Routing add-on, Azure Monitor add-on.
-3. The `catalog-svc` microservice — read-only, returns canned data for now.
+1. `acr.bicep` — Azure Container Registry (Premium), Private Endpoint, customer-managed key from KV. *(Already built and deployed in Phase 2 as originally planned — nothing to redo here.)*
+2. `container-apps-env.bicep` — the Consumption-only Managed Environment (the AKS-cluster equivalent), integrated into `snet-aca`, logs wired to the Phase 1 LA workspace.
+3. `container-app.bicep` — a reusable per-service module (mirrors the loop pattern in `identity.bicep`), invoked once per microservice.
+4. The `catalog-svc` microservice — read-only, returns canned data for now.
 
 ### Step-by-step
 
-**2.1 Build the cluster.**
-Bicep for AKS should include:
-- `oidcIssuerProfile.enabled = true`
-- `securityProfile.workloadIdentity.enabled = true`
-- `networkProfile.networkPlugin = 'azure'`, `networkPluginMode = 'overlay'`, `networkDataplane = 'cilium'` (or kubenet/CNI if you prefer).
-- One system node pool (taint `CriticalAddonsOnly=true:NoSchedule`) and one user node pool.
-- `ingressProfile.webAppRouting.enabled = true`
-- Diagnostic settings to the LA workspace.
+**2.1 Build the Container Apps environment.**
+Bicep for `container-apps-env.bicep` should include:
+- `vnetConfiguration.infrastructureSubnetId` → `snet-aca`, `internal: false` (external ingress for now — Phase 6's Front Door/APIM hardening is the point to reconsider locking this to internal-only).
+- No `workloadProfiles` array — Consumption-only, which is what keeps this off the VM-family quota that blocked AKS.
+- `appLogsConfiguration.destination = 'log-analytics'`, wired to the Phase 1 LA workspace via `listKeys()` at deploy time.
 
 > **Claude Code prompt:**
-> *"Generate `infra/modules/aks.bicep` with: Workload Identity + OIDC issuer enabled, Application Routing add-on, Azure Monitor add-on, Defender add-on, Azure CNI overlay, Cilium dataplane, one system node pool (taint `CriticalAddonsOnly`), one user node pool (Standard_D4s_v5, 2 nodes, autoscale 2-5). Wire diagnostic settings to LA."*
+> *"Generate `infra/modules/container-apps-env.bicep` for a Consumption-only Azure Container Apps Managed Environment integrated into an existing subnet (`snet-aca`, not delegated), external ingress, with `appLogsConfiguration` wired to an existing Log Analytics workspace via `listKeys()`. Output the environment ID and default domain."*
 
-Attach ACR to AKS so pulls use the kubelet identity:
-```powershell
-az aks update -n aks-contoso-dev-eus2 -g rg-contoso-dev-eus2 --attach-acr acrcontosodeveus2
-```
+There's no `--attach-acr` step here — registry access is granted per Container App via `configuration.registries` + that app's own Managed Identity, not a cluster-wide kubelet identity.
 
 **2.2 Write `catalog-svc`.**
 Start small: a .NET 8 minimal API or Node Fastify that returns three hard-coded products. Add OpenTelemetry from day one (it's harder to retrofit).
@@ -357,61 +353,51 @@ Multi-stage Dockerfile, distroless or Alpine base. No root user. Read-only files
 
 **2.4 Push to ACR.**
 ```powershell
-az acr build -r acrcontosodeveus2 -t catalog-svc:0.1.0 .
+az acr build -r acrcontosodeveus -t catalog-svc:0.1.0 .
 ```
 ACR Tasks builds in the cloud so you don't need local Docker for this — handy since Docker Desktop can be slow to start on Windows.
 
 **2.5 Wire Workload Identity.**
-- Create a User-Assigned MI for `catalog-svc` (already in `identity.bicep` Phase 1).
-- Federate it to the cluster's OIDC issuer for a specific namespace + ServiceAccount:
-```powershell
-$issuer = az aks show -g rg-contoso-dev-eus2 -n aks-contoso-dev-eus2 `
-  --query oidcIssuerProfile.issuerUrl -o tsv
-
-az identity federated-credential create `
-  --name catalog-svc-fc `
-  --identity-name mi-catalog-svc-dev `
-  --resource-group rg-contoso-dev-eus2 `
-  --issuer $issuer `
-  --subject system:serviceaccount:catalog:catalog-svc
+Much simpler than the AKS version — `mi-catalog-svc-dev` already exists from Phase 1's `identity.bicep`; there's no federated-credential step and no Kubernetes ServiceAccount to annotate. `container-app.bicep` binds it directly:
+```bicep
+identity: {
+  type: 'UserAssigned'
+  userAssignedIdentities: {
+    '<mi-catalog-svc-dev resource ID>': {}
+  }
+}
 ```
-- The Kubernetes ServiceAccount needs the `azure.workload.identity/client-id` annotation; the Pod template needs the `azure.workload.identity/use: "true"` label.
+and references that same identity in `configuration.registries[].identity` for the ACR pull.
 
-**2.6 Deploy with Kustomize.**
-`k8s/base/catalog-svc/`: `deployment.yaml`, `service.yaml`, `serviceaccount.yaml`, `kustomization.yaml`, plus an `ingress.yaml` using the App Routing add-on's `webapprouting.kubernetes.azure.com` ingress class.
+**2.6 Deploy `catalog-svc` via `container-app.bicep`.**
 
 > **Claude Code prompt:**
-> *"Write the Kustomize base for `catalog-svc` and a `dev` overlay that:
-> - Annotates the SA with the MI client ID.
-> - Labels the Pod for Azure Workload Identity.
-> - Sets resource requests/limits.
-> - Sets `runAsNonRoot: true` and `readOnlyRootFilesystem: true`.
-> - Exposes an Ingress via the Application Routing add-on.
-> - Mounts a configmap with the Cosmos endpoint URL.
-> No secrets."*
+> *"Generate `infra/modules/container-app.bicep` as a reusable module: params for `serviceName`, `image`, `containerAppsEnvironmentId`, `acrLoginServer`, `managedIdentityId`, `cpu`/`memory`, `minReplicas`/`maxReplicas`, and external ingress `targetPort`. Registry auth via the passed-in managed identity, no admin credentials. Output the app's FQDN."*
 
 ```powershell
-kubectl apply -k k8s/overlays/dev
+az deployment group create `
+  -g rg-contoso-dev-eus2 `
+  -f infra/modules/container-app.bicep `
+  -p serviceName=catalog-svc image=acrcontosodeveus.azurecr.io/catalog-svc:0.1.0 ...
 ```
 
 **2.7 Validate the round-trip.**
 ```powershell
-$ingressIp = kubectl get ingress -n catalog catalog-svc `
-  -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+$fqdn = az containerapp show -n ca-catalog-svc-dev -g rg-contoso-dev-eus2 `
+  --query properties.configuration.ingress.fqdn -o tsv
 
-# Use curl.exe (not the PowerShell alias) so headers behave as expected
-curl.exe -H "Host: catalog.dev.contoso.example" "http://$ingressIp/api/products"
+curl.exe "https://$fqdn/api/products"
 ```
-> Or use PowerShell-native: `Invoke-RestMethod -Uri "http://$ingressIp/api/products" -Headers @{ Host = "catalog.dev.contoso.example" }`
+No `Host` header trick needed — Container Apps gives every app its own HTTPS FQDN directly, unlike the shared AKS ingress IP the original plan used.
 
-**2.8 Add HPA.**
-Scale on CPU `targetAverageUtilization: 70`, min 2, max 5.
+**2.8 Confirm scaling.**
+Scaling is part of `container-app.bicep`'s own `template.scale` block (min/max replicas + an HTTP concurrency rule), not a separate HPA object — set `minReplicas`/`maxReplicas` when deploying 2.6 and confirm via `az containerapp revision list`.
 
 ### Exit criteria
-- [ ] AKS cluster healthy, two services running (kube-system + catalog).
-- [ ] Image scan on push reports no Critical or High CVEs.
-- [ ] `catalog-svc` reachable via the ingress IP and returns canned products.
-- [ ] No connection strings or secrets in `deployment.yaml`.
+- [ ] Container Apps environment healthy (`provisioningState: Succeeded`).
+- [ ] Image scan on push reports no Critical or High CVEs — this still depends on the Containers Defender plan from Phase 6, same caveat as `acr.bicep` already notes; scanning happens at the registry level regardless of what compute pulls the image.
+- [ ] `catalog-svc` reachable via its Container Apps FQDN and returns canned products.
+- [ ] No connection strings or secrets in the Container App's Bicep definition or env vars.
 - [ ] App Insights shows traces with correlation IDs.
 
 ---
@@ -491,22 +477,21 @@ Write a small script (`scripts/seed-catalog.ts`) that loads 50 products from `da
 1. `openai.bicep` — Azure OpenAI resource, deployments for `gpt-4o` (or current best) and `text-embedding-3-large`, PE, MI access.
 2. `ai-search.bicep` — Standard tier, semantic ranker enabled, PE, MI access.
 3. `ai-services.bicep` — multi-service Cognitive Services account (Language, Vision, Content Safety), PE.
-4. `moderation-worker` Deployment with **KEDA** ScaledObject keyed off Service Bus queue depth.
-5. `assistant-svc` Deployment.
+4. `moderation-worker` Container App with a native **KEDA** `azure-servicebus` scale rule keyed off queue depth (min 0 replicas — Consumption scales to zero when idle).
+5. `assistant-svc` Container App.
 
 ### Step-by-step
 
 **4.1 Deploy AI resources and validate PE access.**
-Pop a debug pod into the cluster:
+Get a shell into a running replica to test MI access directly, no separate debug pod needed:
 ```powershell
-kubectl run debug --image=mcr.microsoft.com/azure-cli -it --rm -- bash
+az containerapp exec -n ca-catalog-svc-dev -g rg-contoso-dev-eus2 --command /bin/bash
 ```
-Then, inside the container's bash shell:
+Then, inside that shell:
 ```bash
 az login --identity
 az cognitiveservices account list-keys ...   # should work via MI
 ```
-(The pod runs Linux, so the shell inside is bash regardless of your host OS.)
 
 **4.2 Build the moderation worker.**
 Pseudocode:
@@ -532,10 +517,10 @@ async for message in service_bus_receiver:
 > 4. If max severity < `MODERATION_THRESHOLD` (env var), set status to `approved`; else `needs-review`.
 > 5. PATCH the Cosmos doc.
 > 6. Publish `review.scored` to Event Hubs.
-> Use `DefaultAzureCredential` everywhere. Add structured logging with correlation ID from the message properties. Add a KEDA `ScaledObject` triggering on queue depth, min 0 max 10."*
+> Use `DefaultAzureCredential` everywhere. Add structured logging with correlation ID from the message properties. Deploy it via `container-app.bicep` with a native `azure-servicebus` KEDA scale rule, min 0 max 10 replicas."*
 
-**4.3 Add KEDA ScaledObject.**
-Trigger: `azure-servicebus`. Min 0, max 10 replicas. Use Workload Identity for KEDA auth.
+**4.3 Confirm the scale rule.**
+`container-app.bicep`'s `template.scale.rules` — `azureQueue`/`azure-servicebus` type, min 0, max 10, `identity` set to the worker's own Managed Identity for KEDA auth (no separate identity or secret needed, same pattern as `catalog-svc`'s Phase 2 deployment).
 
 **4.4 Build the assistant service (RAG).**
 Indexer pulls products from Cosmos → AI Search `products-index` with vector fields generated by an indexer skillset calling the embedding model.
@@ -701,7 +686,7 @@ Consequences: ...
 
 ## Appendix C — Stretch goals after v1
 - Replace Synapse with Microsoft Fabric (OneLake + Direct Lake).
-- Swap App Routing add-on for AGIC.
+- Revisit AKS if the subscription's vCPU quota is ever increased — `aks.bicep` is kept, unused, for exactly this (see ADR-002).
 - Add Dapr for service-to-service plumbing.
 - Add Customer Lockbox in prod.
 - Multi-region active-active with Cosmos multi-region writes and Front Door routing.

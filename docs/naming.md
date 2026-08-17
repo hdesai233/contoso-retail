@@ -42,8 +42,7 @@ implemented.
 |---|---|---|---|---|---|
 | Resource group | `rg` | — | `rg-contoso-dev-eus2`\* | `rg-contoso-test-eus2` | `rg-contoso-prod-eus2` |
 | Virtual network | `vnet` | `network.bicep` | `vnet-contoso-dev-eus` | `vnet-contoso-test-eus2` | `vnet-contoso-prod-eus2` |
-| Subnet — AKS system pool | `snet` | `network.bicep` | `snet-aks-systempool` | `snet-aks-systempool` | `snet-aks-systempool` |
-| Subnet — AKS user pool | `snet` | `network.bicep` | `snet-aks-userpool` | `snet-aks-userpool` | `snet-aks-userpool` |
+| Subnet — Container Apps (not delegated, ≥ /23) | `snet` | `network.bicep` | `snet-aca` | `snet-aca` | `snet-aca` |
 | Subnet — Application Gateway | `snet` | `network.bicep` | `snet-appgw` | `snet-appgw` | `snet-appgw` |
 | Subnet — Private Endpoints | `snet` | `network.bicep` | `snet-pe` | `snet-pe` | `snet-pe` |
 | Subnet — APIM | `snet` | `network.bicep` | `snet-apim` | `snet-apim` | `snet-apim` |
@@ -59,14 +58,17 @@ implemented.
 
 ### Compute (Phase 2)
 
+Originally AKS — pivoted to Azure Container Apps after a subscription vCPU quota wall made any AKS-compliant cluster impossible. See [ADR-002](decisions/ADR-002-aks-to-container-apps.md). `aks.bicep` and its naming (`aks-contoso-{env}-{region}`) are kept, unused, in case quota is ever increased.
+
 | Resource | Abbr | Module | dev | test | prod |
 |---|---|---|---|---|---|
-| AKS cluster | `aks` | `aks.bicep` | `aks-contoso-dev-eus` | `aks-contoso-test-eus2` | `aks-contoso-prod-eus2` |
+| Container Apps Environment | `cae` | `container-apps-env.bicep` | `cae-contoso-dev-eus` | `cae-contoso-test-eus2` | `cae-contoso-prod-eus2` |
+| Container App (per microservice) | `ca` | `container-app.bicep` | `ca-{service}-dev` | `ca-{service}-test` | `ca-{service}-prod` |
 | Container Registry (no hyphens, ≤ 50 chars) | `acr` | `acr.bicep` | `acrcontosodeveus` | `acrcontosotesteus2` | `acrcontosoprodeus2` |
 
 ### User-assigned managed identities (workload identity, one per microservice)
 
-`identity.bicep` — pattern `mi-{service-name}-{env}` (region omitted; MIs are tied to the AKS cluster's workload identity federation, not a region-scoped data plane):
+`identity.bicep` — pattern `mi-{service-name}-{env}` (region omitted; each MI is bound directly to its Container App's `identity.userAssignedIdentities`, not a region-scoped data plane):
 
 | Service | dev | test | prod |
 |---|---|---|---|
@@ -136,11 +138,11 @@ implemented.
 | API Management | `apim` | `apim.bicep` | `apim-contoso-dev-eus` | `apim-contoso-test-eus2` | `apim-contoso-prod-eus2` |
 | Application Gateway v2 + WAF | `agw` | not yet a module — see note below | `agw-contoso-dev-eus` | `agw-contoso-test-eus2` | `agw-contoso-prod-eus2` |
 
-> **Note on Application Gateway:** `docs/02-Architecture.md` §3.1 describes an AppGW v2 + WAF layer in front of AKS ingress, but no `infra/modules/appgw.bicep` exists yet and the Phase 6 decision table currently has the App Routing add-on (managed NGINX) as cluster ingress instead. Flag this to the user before implementing — either add a dedicated `appgw.bicep` module using the name above, or drop AppGW from the architecture doc if App Routing add-on is the final decision.
+> **Note on Application Gateway:** `docs/02-Architecture.md` §3.1 describes an AppGW v2 + WAF layer in front of the Container Apps environment, but no `infra/modules/appgw.bicep` exists yet. Flag this to the user before implementing.
 
 ## Notes
 
-- **Instance suffixes** (`-01`, `-02`) are reserved for resources where a second instance is plausible in the same RG (Key Vault, Storage accounts). Singleton resources (AKS, Cosmos, SQL server, etc.) omit it.
+- **Instance suffixes** (`-01`, `-02`) are reserved for resources where a second instance is plausible in the same RG (Key Vault, Storage accounts). Singleton resources (Container Apps Environment, Cosmos, SQL server, etc.) omit it.
 - **`dev` may keep public network access** per `CLAUDE.md` rule 2 — this does not change any name, only a network-access property on the same resource.
 - Non-ARM, data-plane identifiers (Cosmos containers, Blob containers, Service Bus queues/topics, Event Hub names, ADLS containers) are shared verbatim across environments — only the parent resource name carries the `{env}` token.
 - Reference: [CAF resource abbreviations](https://learn.microsoft.com/azure/cloud-adoption-framework/ready/azure-best-practices/resource-abbreviations).

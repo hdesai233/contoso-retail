@@ -29,10 +29,10 @@ Every choice below traces back to one of these principles:
                               ┌─────────────────────────────────┐
                               │ Application Gateway + WAF (v2)  │  (OWASP rules, prevention mode)
                               └────────┬────────────────────────┘
-                                       │  Private Link to AKS ingress
+                                       │  Private Link to Container Apps
                                        ▼
             ┌──────────────────────────────────────────────────────────┐
-            │   Azure Kubernetes Service (AKS), zone-redundant         │
+            │   Azure Container Apps Environment (Consumption)          │
             │   ┌─────────────┐ ┌─────────────┐ ┌─────────────────┐    │
             │   │ catalog-svc │ │ review-svc  │ │ assistant-svc   │    │
             │   └─────────────┘ └─────────────┘ └─────────────────┘    │
@@ -40,7 +40,7 @@ Every choice below traces back to one of these principles:
             │   │ moderation- │ │ admin-bff   │ │ web frontend    │    │
             │   │   worker    │ │             │ │ (React/Vite)    │    │
             │   └─────────────┘ └─────────────┘ └─────────────────┘    │
-            │   NGINX/Application Routing add-on as cluster ingress    │
+            │   Built-in ingress, native KEDA scaling per app          │
             └────┬────────────┬─────────────────┬───────────────┬──────┘
                  │ MI         │ MI              │ MI            │ MI
                  ▼            ▼                 ▼               ▼
@@ -84,22 +84,18 @@ See the rendered diagram at the end of this document.
 
 **Application Gateway v2 with WAF.** A regional reverse proxy with OWASP Core Rule Set. Sits in a dedicated subnet inside the platform VNet. In prod, Front Door reaches it via Private Link; in dev you can connect via a restricted public IP for simplicity.
 
-> Why two layers? Front Door gives global anycast and edge caching; Application Gateway gives regional WAF, header rewrites, and URL-based routing into the cluster. You can collapse to one in non-prod.
+> Why two layers? Front Door gives global anycast and edge caching; Application Gateway gives regional WAF, header rewrites, and URL-based routing into the environment. You can collapse to one in non-prod.
 
-### 3.2 Compute: AKS
-**Azure Kubernetes Service** is the compute backbone. Choices:
-- **Cluster topology:** one cluster per environment, zone-redundant in prod (3 zones).
-- **Node pools:** a `system` pool (taints `CriticalAddonsOnly`) and at least one `user` pool. Add a `gpu` pool only if you self-host any models (not needed since we use Azure OpenAI).
-- **Networking:** **Azure CNI Overlay** so pods can reach Azure services via Private Endpoints without bloating the IP range.
-- **Identity:** **Microsoft Entra Workload Identity** (the OIDC federation model). Each Deployment binds to a Kubernetes ServiceAccount which is federated to a User-Assigned Managed Identity.
-- **Ingress:** the **Application Routing add-on** (managed NGINX) for simplicity. Alternative: Application Gateway Ingress Controller (AGIC) if you want the gateway itself inside the cluster.
-- **Add-ons:** Azure Monitor for containers, Defender for Containers, Azure Policy, Key Vault Secrets Store CSI driver.
-- **Scaling:** Horizontal Pod Autoscaler on CPU + custom metric; Cluster Autoscaler on node pool. KEDA for event-driven scaling of the moderation worker based on Service Bus queue depth.
-
-> Why AKS over Azure Container Apps or App Service? Per Andersson Ch. 3, ACA is great for simple microservices with serverless billing. AKS wins when you want richer control, custom networking, and the full Kubernetes ecosystem. Since this is a *learning* project that covers Kubernetes deeply, AKS is the right call. In a smaller real-world project you might pick ACA.
+### 3.2 Compute: Azure Container Apps
+**Azure Container Apps (ACA), Consumption-only environment,** is the compute backbone. Originally AKS — changed after three failed AKS deployments hit a hard subscription vCPU quota wall that no cluster configuration could satisfy; full account in `docs/decisions/ADR-002-aks-to-container-apps.md`. Choices:
+- **Environment topology:** one Consumption-only Managed Environment per environment (dev/test/prod). Consumption-only, not Workload profiles — the latter uses dedicated VM-backed compute and draws from the same subscription VM-family quota pool that blocked AKS; Consumption draws from its own separate, much larger environment-scoped quota.
+- **Networking:** the environment integrates into a dedicated, non-delegated `/23` subnet (`snet-aca`) — Consumption-only environments must **not** be delegated to `Microsoft.App/environments`, unlike Workload profile environments.
+- **Identity:** **Microsoft Entra Workload Identity**, bound directly — each Container App gets a User-Assigned Managed Identity via `identity.userAssignedIdentities`, no OIDC federated-credential step and no Kubernetes ServiceAccount concept to manage.
+- **Ingress:** built into the environment; external for now, revisit internal-only once Front Door/APIM (Phase 6) front it.
+- **Scaling:** each Container App's own `scale` block — min/max replicas plus KEDA-based rules (HTTP concurrency, Service Bus queue depth for the moderation worker) native to the resource. No separate ScaledObject, no Cluster Autoscaler — Consumption scales to zero.
 
 ### 3.3 Microservices (the eight services)
-Each runs as a Deployment in its own namespace, exposes a REST API (and gRPC where it helps), reads its config from environment variables, fetches secrets via the CSI driver from Key Vault, and authenticates outbound calls with its Managed Identity.
+Each runs as its own Container App, exposes a REST API (and gRPC where it helps), reads its config from environment variables, fetches secrets from Key Vault via its Managed Identity (`DefaultAzureCredential`, no CSI driver — that's a Kubernetes-specific concept), and authenticates outbound calls with that same identity.
 
 | Service | Tech | Responsibility |
 |---|---|---|
@@ -223,16 +219,16 @@ Enforced via Conditional Access:
 - The `web-frontend` uses the MSAL.js library; APIs validate JWTs.
 
 **Workload identity — Managed Identities for every service.**
-- User-Assigned MI per service, federated to the service's Kubernetes ServiceAccount.
+- User-Assigned MI per service, bound directly to its Container App via `identity.userAssignedIdentities` — no federation step, no ServiceAccount.
 - RBAC role assignments per scope; e.g., `review-svc` MI gets:
   - `Cosmos DB Built-in Data Contributor` on the `reviews` container only.
   - `Azure Service Bus Data Sender` on the `review-moderation-jobs` queue.
   - `Storage Blob Data Contributor` on the `reviews-images` container only.
 
 **API security**
-- All north-south traffic terminates at the WAF; user JWTs are validated at **Azure API Management** which sits in front of AKS ingress for the public API surface.
+- All north-south traffic terminates at the WAF; user JWTs are validated at **Azure API Management** which sits in front of the Container Apps environment for the public API surface.
 - APIM applies rate limits, quotas, request validation, and adds correlation IDs.
-- Inside the cluster, services validate the propagated JWT again (defense in depth) and enforce business RBAC.
+- Inside each app, services validate the propagated JWT again (defense in depth) and enforce business RBAC.
 
 ### 3.9 Networking
 
@@ -240,9 +236,7 @@ Enforced via Conditional Access:
 Subscription / Management Group
 └── Resource Group: rg-contoso-prod-eus2
     └── VNet: vnet-contoso-prod-eus2 (10.20.0.0/16)
-        ├── snet-aks-systempool    (10.20.0.0/22)
-        ├── snet-aks-userpool      (10.20.4.0/22)
-        ├── snet-aks-podcidr       (10.244.0.0/16, CNI overlay)
+        ├── snet-aca               (10.20.16.0/23, not delegated — Consumption-only environment)
         ├── snet-appgw             (10.20.8.0/24)
         ├── snet-pe                (10.20.9.0/24)   ← Private Endpoints
         ├── snet-apim              (10.20.10.0/24)
@@ -274,7 +268,9 @@ contoso-retail/
 ├── infra/
 │   ├── main.bicep
 │   ├── modules/
-│   │   ├── aks.bicep
+│   │   ├── container-apps-env.bicep
+│   │   ├── container-app.bicep    ← reusable per-service module
+│   │   ├── aks.bicep              ← unused, kept per ADR-002
 │   │   ├── cosmos.bicep
 │   │   ├── sql.bicep
 │   │   ├── storage.bicep
@@ -293,12 +289,6 @@ contoso-retail/
 │       ├── dev.bicepparam
 │       ├── test.bicepparam
 │       └── prod.bicepparam
-├── k8s/
-│   ├── base/        ← Kustomize base manifests
-│   └── overlays/
-│       ├── dev/
-│       ├── test/
-│       └── prod/
 ├── .github/workflows/
 │   ├── ci-apps.yml
 │   ├── ci-infra.yml
@@ -318,10 +308,10 @@ contoso-retail/
 **CI/CD flow.**
 1. PR opened → unit tests run, container images built (no push), `bicep what-if` runs.
 2. Merge to `main` → images pushed to ACR with `sha`+`semver` tags, signed with Notary v2 → cosign optional.
-3. Deploy to dev via `azd deploy` or by `cd-dev.yml` applying Kustomize overlays.
+3. Deploy to dev via `azd deploy` or by `cd-dev.yml` updating each Container App's image via Bicep.
 4. Smoke tests run.
 5. Manual approval gates promotion to test, then to prod. Bicep what-if posted to the PR for visual review.
-6. Rollback = re-run prior workflow run, or `kubectl rollout undo`, plus a Bicep revert if infra changed.
+6. Rollback = re-run prior workflow run, or `az containerapp revision activate` to a prior revision, plus a Bicep revert if infra changed.
 
 **Federated workload identity** between GitHub Actions and Azure replaces service principal secrets entirely.
 
@@ -331,8 +321,7 @@ contoso-retail/
 
 | Source | Diagnostic setting target |
 |---|---|
-| AKS control plane | LA workspace |
-| AKS container logs + metrics | Container Insights → same LA workspace |
+| Container Apps environment (system + console logs) | LA workspace, via `appLogsConfiguration` |
 | AppGw, Front Door, APIM | LA |
 | Cosmos DB, SQL, Storage, Key Vault | LA |
 | Activity logs | LA + Storage (long-term) |
@@ -352,9 +341,9 @@ contoso-retail/
 
 | Tier | Component | Est. monthly cost |
 |---|---|---|
-| **Dev** | AKS B2s nodes (2), Cosmos free tier, AI Search Free, OpenAI pay-as-you-go ~$10, Storage, KV, App Insights | **~$100–150** |
-| **Test** | AKS D4s_v5 (2-3 nodes), Cosmos autoscale 1k RU, AI Search Basic, OpenAI ~$50, AppGw v2, APIM Dev | **~$500–700** |
-| **Prod** | AKS zone-redundant D4s_v5 (3+ nodes), Cosmos autoscale 4k RU/container, AI Search S1, OpenAI PTU 50, AppGw v2 Premium, APIM Standard v2, Front Door Premium, SQL BC GP, Sentinel | **~$2,500–4,000** |
+| **Dev** | Container Apps Consumption (pay-per-vCPU-second, scales to zero), Cosmos free tier, AI Search Free, OpenAI pay-as-you-go ~$10, Storage, KV, App Insights | **~$80–130** |
+| **Test** | Container Apps Consumption (sized for steady low traffic), Cosmos autoscale 1k RU, AI Search Basic, OpenAI ~$50, AppGw v2, APIM Dev | **~$450–650** |
+| **Prod** | Container Apps Consumption or Workload profiles (dedicated, zone-redundant) if steady-state load justifies it, Cosmos autoscale 4k RU/container, AI Search S1, OpenAI PTU 50, AppGw v2 Premium, APIM Standard v2, Front Door Premium, SQL BC GP, Sentinel | **~$2,400–3,900** |
 
 These are order-of-magnitude. Run **Azure Pricing Calculator** with your real region and SKUs before any sizing decision.
 
@@ -362,17 +351,16 @@ These are order-of-magnitude. Run **Azure Pricing Calculator** with your real re
 
 | Decision | Choice | Alternative | Why we chose this |
 |---|---|---|---|
-| Compute platform | AKS | Container Apps, App Service | Maximum learning surface area + future flexibility |
-| Auth for service-to-service | Managed Identity + Workload Identity Federation | Service principals with secrets | No secrets to rotate, identity is the perimeter |
+| Compute platform | Azure Container Apps (Consumption) | AKS, App Service | Originally AKS for max learning surface area; reversed after AKS's mandatory 8 vCPU system-pool floor collided with this subscription's 6 vCPU cap — see ADR-002 |
+| Auth for service-to-service | Managed Identity + Workload Identity | Service principals with secrets | No secrets to rotate, identity is the perimeter |
 | Catalog database | Cosmos DB (NoSQL API) | Azure SQL | Catalog is read-heavy, geo-distributable, flexible schema |
 | Transactional DB | Azure SQL | Postgres Flexible Server | Tighter integration with Always Encrypted + book coverage |
 | Messaging | Service Bus + Event Hubs + Event Grid | Just one or two | They solve different problems; learning each is valuable |
-| LLM | Azure OpenAI | Self-hosted Llama on AKS GPU | PaaS scales, Azure compliance, lower ops burden |
+| LLM | Azure OpenAI | Self-hosted Llama on GPU compute | PaaS scales, Azure compliance, lower ops burden |
 | Vector store | Azure AI Search | Cosmos DB vector, PostgreSQL pgvector | Hybrid search + semantic ranker baked in |
 | Warehouse | Synapse Analytics | Microsoft Fabric | Matches the book; Fabric listed as stretch |
 | Edge | Front Door + AppGw | Just AppGw, or Front Door Premium alone | Demonstrates layered defense |
 | IaC | Bicep | Terraform | First-party, AAD-native, simpler for Azure-only |
-| Cluster ingress | App Routing add-on (managed NGINX) | AGIC | One less thing to operate; AGIC is a Phase 6 swap option |
 
 ## 5. Security architecture (Zero Trust applied)
 
@@ -400,7 +388,7 @@ These are order-of-magnitude. Run **Azure Pricing Calculator** with your real re
 - **Cosmos DB:** continuous backup, restore-to-region.
 - **Azure SQL:** auto-failover group to the paired region, geo-restore.
 - **Blob Storage:** RA-GZRS for the prod review-images account.
-- **AKS:** redeploy cluster from Bicep into paired region; reconfigure DNS at Front Door.
+- **Container Apps:** redeploy the environment and each Container App from Bicep into the paired region; reconfigure DNS at Front Door.
 - **Key Vault:** soft-delete + purge protection on; replicate critical secrets to a paired KV.
 - **DR drill:** quarterly, runbook lives in `/docs/runbooks/dr.md`.
 
@@ -410,7 +398,7 @@ Six phases — described in detail in `03-Implementation-Guide.md`:
 
 0. Foundation (subscriptions, tooling, Bicep skeleton).
 1. Identity, network, secrets baseline.
-2. Containers, AKS, first microservice.
+2. Containers, Azure Container Apps, first microservice.
 3. Data plane.
 4. AI plane.
 5. Analytics plane.

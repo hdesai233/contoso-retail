@@ -49,8 +49,11 @@ var keyVaultName = 'kv-${workload}-${env}-${regionAbbr}-01'
 // module defender      'modules/defender.bicep'      = { name: 'defender', scope: subscription(), params: {} }
 
 // Phase 2
-// module acr           'modules/acr.bicep'           = { name: 'acr', params: { workload: workload, env: env, location: location, regionAbbr: regionAbbr, tags: tags, subnetId: network.outputs.privateEndpointSubnetId, privateDnsZoneId: network.outputs.acrPrivateDnsZoneId, laWorkspaceId: observability.outputs.laWorkspaceId, keyVaultName: keyVaultName } }
-// module aks           'modules/aks.bicep'           = { name: 'aks', ... }
+// module acr              'modules/acr.bicep'              = { name: 'acr', params: { workload: workload, env: env, location: location, regionAbbr: regionAbbr, tags: tags, subnetId: network.outputs.privateEndpointSubnetId, privateDnsZoneId: network.outputs.acrPrivateDnsZoneId, laWorkspaceId: observability.outputs.laWorkspaceId, keyVaultName: keyVaultName } }
+// // aks.bicep is unused — kept per ADR-002 (subscription vCPU quota wall). Phase 2 compute is container-apps-env.bicep + container-app.bicep instead.
+// module containerAppsEnv 'modules/container-apps-env.bicep' = { name: 'containerAppsEnv', params: { workload: workload, env: env, location: location, regionAbbr: regionAbbr, tags: tags, acaSubnetId: network.outputs.acaSubnetId, laWorkspaceName: observability.outputs.laWorkspaceName } }
+// // Per-service Container Apps get wired here as each microservice is built, e.g.:
+// // module catalogSvc 'modules/container-app.bicep' = { name: 'catalogSvc', params: { serviceName: 'catalog-svc', env: env, location: location, tags: tags, containerAppsEnvironmentId: containerAppsEnv.outputs.containerAppsEnvId, image: '${acr.outputs.acrLoginServer}/catalog-svc:0.1.0', acrLoginServer: acr.outputs.acrLoginServer, managedIdentityId: filter(identity.outputs.managedIdentities, i => i.service == 'catalog-svc')[0].id } }
 
 // Phase 3
 // module cosmos        'modules/cosmos.bicep'        = { ... }

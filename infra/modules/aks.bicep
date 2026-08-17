@@ -1,4 +1,19 @@
-// aks.bicep — Phase 2
+// aks.bicep — Phase 2 — CURRENTLY UNUSED, KEPT FOR POSSIBLE FUTURE USE.
+//
+// This module is fully implemented and was verified against Microsoft Learn
+// property-by-property, but this subscription has a hard 6 vCPU total
+// regional quota cap (identical across every region it can deploy to) and
+// AKS's system node pool has a non-negotiable >=8 vCPU floor (>=4 vCPU x
+// >=2 nodes, non-B-series). 8 > 6, so no configuration of this module can
+// deploy here. Phase 2 compute pivoted to Azure Container Apps instead —
+// see docs/decisions/ADR-002-aks-to-container-apps.md for the full account,
+// including the three failed deployment attempts that led to this.
+//
+// Kept rather than deleted in case the subscription's vCPU quota is ever
+// increased and AKS becomes viable again — deleting fully-verified, working
+// IaC over an external quota fluke felt wasteful. Revisit before reusing:
+// SKU availability and resource-provider registrations may have changed.
+//
 // AKS cluster: Workload Identity + OIDC issuer, Application Routing add-on,
 // Container Insights + Defender for Containers wired to the shared LA
 // workspace, Azure CNI Overlay with Cilium, one system pool + one user pool,

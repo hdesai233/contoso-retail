@@ -1,13 +1,16 @@
 		# CLAUDE.md — Contoso Retail Insights Platform
 
 ## Project overview
-An Azure-native, microservices-on-AKS retail platform with AI moderation, an
-AI shopping assistant, and an analytics pipeline. Build follows the phases in
-`docs/03-Implementation-Guide.md`. Architecture lives in `docs/02-Architecture.md`.
+An Azure-native, microservices-on-Container-Apps retail platform with AI
+moderation, an AI shopping assistant, and an analytics pipeline. Build follows
+the phases in `docs/03-Implementation-Guide.md`. Architecture lives in
+`docs/02-Architecture.md`.
 
 ## Tech stack
 - IaC: **Bicep** (no Terraform).
-- Cluster: **AKS** with the Application Routing add-on and Workload Identity.
+- Compute: **Azure Container Apps** (Consumption-only environment), Workload
+  Identity via direct User-Assigned Identity binding. Originally AKS — see
+  `docs/decisions/ADR-002-aks-to-container-apps.md` for why that changed.
 - Languages: .NET 8 for catalog-svc, review-svc, admin-bff. Python 3.11 for
   assistant-svc and moderation-worker. Node/Fastify for notification-svc and
   analytics-collector. React + Vite + TypeScript for web-frontend.
@@ -27,9 +30,12 @@ AI shopping assistant, and an analytics pipeline. Build follows the phases in
 3. **Bicep style:** modules under `infra/modules/`. Use `param` decorators
    (`@description`, `@allowed`, `@minLength`). Apply the tags object from
    `main.bicep` to every resource. Use the CAF abbreviation prefix in names.
-4. **K8s style:** Kustomize, not Helm. Base in `k8s/base/`, env overlays in
-   `k8s/overlays/{dev,test,prod}/`. Always set resource requests/limits, a
-   readiness probe, a liveness probe, and `runAsNonRoot: true`.
+4. **Container Apps style:** each service is a Bicep module under
+   `infra/modules/` built on the shared `container-app.bicep` pattern —
+   no Kubernetes manifests, no Kustomize. Always set explicit `resources`
+   (cpu/memory), a `scale` block (min/max replicas, KEDA rules native to the
+   resource — no separate ScaledObject), and pull images via the service's
+   own Managed Identity (`configuration.registries`), never admin credentials.
 5. **Tests first** for any business logic. xUnit for .NET, pytest for Python,
    Vitest for TS.
 6. **Telemetry:** every service starts with OpenTelemetry wired to App Insights;
@@ -39,8 +45,8 @@ AI shopping assistant, and an analytics pipeline. Build follows the phases in
 
 ## Naming convention
 `{abbr}-{workload}-{env}-{region}[-{instance}]` per CAF. Workload = `contoso`.
-Examples: `aks-contoso-dev-eus2`, `cosmos-contoso-dev-eus2`. ACR has no
-hyphens: `acrcontosodeveus2`.
+Examples: `cae-contoso-dev-eus2` (Container Apps Environment),
+`cosmos-contoso-dev-eus2`. ACR has no hyphens: `acrcontosodeveus2`.
 
 ## How I want you to work
 - Before making non-trivial changes, surface a short plan with the tradeoffs.

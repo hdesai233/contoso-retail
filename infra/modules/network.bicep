@@ -1,6 +1,12 @@
 // network.bicep — Phase 1
-// VNet with baseline subnets and per-subnet NSGs for AKS, Application Gateway,
-// Private Endpoints, and APIM.
+// VNet with baseline subnets and per-subnet NSGs for Container Apps,
+// Application Gateway, Private Endpoints, and APIM.
+//
+// snet-aca replaced snet-aks-systempool/snet-aks-userpool per ADR-002 (AKS
+// pivoted to Azure Container Apps after a subscription vCPU quota wall).
+// It's deliberately NOT delegated and sized /23 — Consumption-only Container
+// Apps environments require exactly that, the opposite of what a delegated
+// AKS-style subnet would need.
 //
 // Jumpbox and AzureBastionSubnet are documented in docs/naming.md but not
 // added here yet — TODO: add once the jumpbox access pattern is decided.
@@ -30,11 +36,8 @@ param tags object = {}
 @description('Address space for the VNet')
 param vnetAddressPrefix string = '10.20.0.0/16'
 
-@description('Address prefix for the AKS system node pool subnet')
-param systemPoolSubnetPrefix string = '10.20.0.0/22'
-
-@description('Address prefix for the AKS user node pool subnet')
-param userPoolSubnetPrefix string = '10.20.4.0/22'
+@description('Address prefix for the Container Apps subnet. Must be >= /23 and must NOT be delegated — Consumption-only environment requirement.')
+param acaSubnetPrefix string = '10.20.16.0/23'
 
 @description('Address prefix for the Application Gateway subnet')
 param appGwSubnetPrefix string = '10.20.8.0/24'
@@ -53,21 +56,43 @@ var vnetName = 'vnet-${workload}-${env}-${regionAbbr}'
 // default rules (deny internet inbound, allow VNet + Azure Load Balancer).
 // -----------------------------------------------------------------------------
 
-resource nsgSystemPool 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
-  name: 'nsg-aks-systempool-${env}-${regionAbbr}'
+resource nsgAca 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
+  name: 'nsg-aca-${env}-${regionAbbr}'
   location: location
   tags: tags
   properties: {
-    securityRules: []
-  }
-}
-
-resource nsgUserPool 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
-  name: 'nsg-aks-userpool-${env}-${regionAbbr}'
-  location: location
-  tags: tags
-  properties: {
-    securityRules: []
+    securityRules: [
+      {
+        // Client HTTP/HTTPS access to the environment's external ingress.
+        // https://learn.microsoft.com/azure/container-apps/firewall-integration
+        name: 'AllowClientHttpHttpsInbound'
+        properties: {
+          priority: 100
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: 'Internet'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRanges: ['80', '443']
+        }
+      }
+      {
+        // Azure Load Balancer probing backend pools in a Consumption-only
+        // environment — the dynamic port range Container Apps requires.
+        name: 'AllowLoadBalancerProbeInbound'
+        properties: {
+          priority: 110
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: 'AzureLoadBalancer'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRange: '30000-32767'
+        }
+      }
+    ]
   }
 }
 
@@ -146,17 +171,15 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {
     }
     subnets: [
       {
-        name: 'snet-aks-systempool'
+        name: 'snet-aca'
         properties: {
-          addressPrefix: systemPoolSubnetPrefix
-          networkSecurityGroup: { id: nsgSystemPool.id }
-        }
-      }
-      {
-        name: 'snet-aks-userpool'
-        properties: {
-          addressPrefix: userPoolSubnetPrefix
-          networkSecurityGroup: { id: nsgUserPool.id }
+          addressPrefix: acaSubnetPrefix
+          networkSecurityGroup: { id: nsgAca.id }
+          // Consumption-only Container Apps environments must NOT be
+          // delegated to Microsoft.App/environments — that delegation is
+          // only for Workload profile environments, which use dedicated
+          // VM-backed compute and would hit the same vCPU quota wall AKS
+          // did. Deliberately no `delegations` property here.
         }
       }
       {
@@ -238,8 +261,7 @@ resource acrPrivateDnsZoneVnetLink 'Microsoft.Network/privateDnsZones/virtualNet
 
 output vnetId string = vnet.id
 output vnetName string = vnet.name
-output systemPoolSubnetId string = resourceId('Microsoft.Network/virtualNetworks/subnets', vnet.name, 'snet-aks-systempool')
-output userPoolSubnetId string = resourceId('Microsoft.Network/virtualNetworks/subnets', vnet.name, 'snet-aks-userpool')
+output acaSubnetId string = resourceId('Microsoft.Network/virtualNetworks/subnets', vnet.name, 'snet-aca')
 output appGwSubnetId string = resourceId('Microsoft.Network/virtualNetworks/subnets', vnet.name, 'snet-appgw')
 output privateEndpointSubnetId string = resourceId('Microsoft.Network/virtualNetworks/subnets', vnet.name, 'snet-pe')
 output apimSubnetId string = resourceId('Microsoft.Network/virtualNetworks/subnets', vnet.name, 'snet-apim')
