@@ -6,12 +6,22 @@
 //
 // Node sizing: the system pool has a hard Azure requirement — at least
 // 4 vCPU / 4 GB, B-series not supported at all — so it can't be shrunk
-// below Standard_D4s_v5-class sizes regardless of environment.
+// below a Standard_D4s-class size regardless of environment.
 // https://learn.microsoft.com/azure/aks/use-system-pools#system-and-user-node-pools
-// The user pool has no such floor; it defaults to Standard_B2s here to keep
-// dev cheap, since that's where catalog-svc (a tiny canned-data API for now)
-// actually runs. Override systemPoolVmSize/userPoolVmSize per environment as
-// real load shows up — see docs/02-Architecture.md §3.12's cost table.
+// The user pool has no such floor.
+//
+// Defaults are Standard_D4s_v7 (system) / Standard_D2s_v7 (user) — not v5,
+// and not B-series for the user pool either — because this subscription's
+// own "allowed VM SKUs" policy separately rejects both Standard_D4s_v5 and
+// Standard_B2s (confirmed by a failed deployment: "The VM size of
+// Standard_D4s_v5,Standard_B2s is not allowed in your subscription in
+// location 'eastus'"). Only newer v7-generation SKUs and a handful of
+// specialty families were in that subscription's allow-list; no B-series at
+// all. If you're deploying to a different subscription, check its allowed
+// SKUs first — see docs/decisions/ADR-001-dev-region-eastus.md for the
+// analogous region-policy issue and how it was diagnosed.
+// Override systemPoolVmSize/userPoolVmSize per environment/subscription —
+// see docs/02-Architecture.md §3.12's cost table for the original intent.
 //
 // See docs/03-Implementation-Guide.md Phase 2 and docs/naming.md.
 
@@ -50,15 +60,15 @@ param acrName string
 @description('AKS control-plane SKU tier. Free has no SLA and no cost; Standard adds an SLA-backed API server for ~$0.10/hr. Defaults to Free for cost-conscious dev/learning use — consider Standard for prod.')
 param skuTier string = 'Free'
 
-@description('VM size for the system node pool. Must stay >= 4 vCPU / 4 GB and non-B-series — Azure requirement, not a cost knob.')
-param systemPoolVmSize string = 'Standard_D4s_v5'
+@description('VM size for the system node pool. Must stay >= 4 vCPU / 4 GB and non-B-series (AKS requirement) — check it is also in your subscription allowed-SKUs list before changing.')
+param systemPoolVmSize string = 'Standard_D4s_v7'
 
 @minValue(2)
 @description('System pool node count. Azure requires at least 2; 3 is recommended for prod fault tolerance.')
 param systemPoolNodeCount int = 2
 
-@description('VM size for the user node pool. No Azure-imposed floor — size for actual workload.')
-param userPoolVmSize string = 'Standard_B2s'
+@description('VM size for the user node pool. No AKS-imposed floor, but still subject to your subscription allowed-SKUs list.')
+param userPoolVmSize string = 'Standard_D2s_v7'
 
 @minValue(1)
 @description('User pool autoscale minimum node count')
