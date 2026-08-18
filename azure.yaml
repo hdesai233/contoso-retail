@@ -1,5 +1,7 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
-# TODO: wire up services after Phase 2. See docs/03-Implementation-Guide.md §0.4.
+# TODO: uncomment once deploying via `azd deploy` end-to-end, rather than the
+# per-module `az acr build` + `az deployment group create` flow this project
+# currently uses — see docs/03-Implementation-Guide.md Phase 2.
 
 name: contoso-retail
 metadata:
@@ -9,7 +11,7 @@ metadata:
 #   catalog-svc:
 #     project: ./apps/catalog-svc
 #     language: dotnet
-#     host: aks
+#     host: containerapp
 
 infra:
   provider: bicep

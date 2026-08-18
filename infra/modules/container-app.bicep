@@ -31,6 +31,9 @@ param image string
 @description('ACR login server, e.g. acrcontosodeveus.azurecr.io — used for registry auth, kept separate from `image` so this module does not need to parse it out')
 param acrLoginServer string
 
+@description('Name of the existing ACR (not the login server URL) — used to grant this service\'s identity AcrPull. Every service pulling from the same registry needs this grant; without it, image pulls fail.')
+param acrName string
+
 @description('Resource ID of this service\'s existing User-Assigned Managed Identity (from identity.bicep). Used for both ACR pull and any Azure SDK calls the app makes with DefaultAzureCredential.')
 param managedIdentityId string
 
@@ -61,7 +64,33 @@ param scaleRules array = []
 @description('Non-secret environment variables, e.g. Cosmos endpoint URL. Never put secrets here — read them from Key Vault via DefaultAzureCredential in app code instead.')
 param envVars array = []
 
+@description('Revision suffix, appended to the auto-incrementing revision name. Pass something unique per deploy (a timestamp, a commit SHA) — without it, an ARM-level redeploy of an existing Container App does not reliably roll a new revision even when template properties like env vars change, so the old replica keeps running unchanged. Discovered the hard way: env var updates silently did not restart the container until this was added.')
+param revisionSuffix string = utcNow('yyyyMMddHHmmss')
+
 var containerAppName = 'ca-${serviceName}-${env}'
+var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
+// managedIdentityId is a full resource ID; extract the identity name to
+// declare an `existing` reference (Bicep can't resolve .properties.principalId
+// from an ID string alone — it needs a typed resource reference).
+var managedIdentityName = last(split(managedIdentityId, '/'))
+
+resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
+  name: acrName
+}
+
+resource managedIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
+  name: managedIdentityName
+}
+
+resource acrPullRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(acr.id, managedIdentityId, acrPullRoleId)
+  scope: acr
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', acrPullRoleId)
+    principalId: managedIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
 
 resource containerApp 'Microsoft.App/containerApps@2026-01-01' = {
   name: containerAppName
@@ -89,6 +118,7 @@ resource containerApp 'Microsoft.App/containerApps@2026-01-01' = {
       ]
     }
     template: {
+      revisionSuffix: revisionSuffix
       containers: [
         {
           name: serviceName
@@ -107,6 +137,10 @@ resource containerApp 'Microsoft.App/containerApps@2026-01-01' = {
       }
     }
   }
+  // Wait for the AcrPull grant before the platform attempts its first image
+  // pull — RBAC propagation isn't instant, and pulling before the role
+  // assignment lands would fail.
+  dependsOn: [acrPullRoleAssignment]
 }
 
 output containerAppId string = containerApp.id
